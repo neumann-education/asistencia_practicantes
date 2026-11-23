@@ -16,6 +16,10 @@ let appState = {
   forzarFeriado: false,
   pendienteAnular: null,
   pendienteIncidencia: null,
+  semanasDisponibles: [],
+  semanaSeleccionadaLunes: null,
+  practicantesReporteSemana: null,
+  cacheReporteSemanal: {},
 }
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -106,22 +110,47 @@ async function llamarAppsScript(datos, conLoading = true) {
 
   if (conLoading) mostrarLoading('Sincronizando...')
 
+  // Función interna con 1 reintento automático para mitigar parpadeos de DNS o red (ERR_NAME_NOT_RESOLVED)
+  const ejecutarConReintento = async (intento = 1) => {
+    try {
+      const respuesta = await fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(datos),
+      })
+
+      if (!respuesta.ok) throw new Error(`Error HTTP: ${respuesta.status}`)
+
+      const data = await respuesta.json()
+      if (!data.success) throw new Error(data.error || 'Error en la operación.')
+      return data
+    } catch (err) {
+      const msg = String(err.message || '').toLowerCase()
+      const esFalloRed =
+        err.name === 'TypeError' ||
+        msg.includes('failed to fetch') ||
+        msg.includes('network') ||
+        msg.includes('net::')
+
+      if (intento === 1 && esFalloRed) {
+        console.warn(
+          'Reintento automático tras fallo de conexión o DNS...',
+          err,
+        )
+        await new Promise((resolve) => setTimeout(resolve, 1200))
+        return ejecutarConReintento(2)
+      }
+      throw err
+    }
+  }
+
   try {
-    const respuesta = await fetch(SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(datos),
-    })
-
-    if (!respuesta.ok) throw new Error(`Error HTTP: ${respuesta.status}`)
-
-    const data = await respuesta.json()
+    const data = await ejecutarConReintento(1)
     if (conLoading) ocultarLoading()
-
-    if (!data.success) throw new Error(data.error || 'Error en la operación.')
     return data
   } catch (err) {
     if (conLoading) ocultarLoading()
+    console.warn('Error en comunicación con Apps Script:', err)
     throw err
   }
 }
@@ -249,10 +278,23 @@ async function iniciarSesion(e) {
     appState.supervisor = res.supervisor
     appState.practicantes = res.practicantes || []
     appState.feriado = res.feriado || { esFeriado: false }
+    if (res.semanasDisponibles && res.semanasDisponibles.length > 0) {
+      appState.semanasDisponibles = res.semanasDisponibles
+    } else {
+      appState.semanasDisponibles = generarSemanasLocales()
+    }
+    const semActual =
+      appState.semanasDisponibles.find((s) => s.esActual) ||
+      appState.semanasDisponibles[0]
+    appState.semanaSeleccionadaLunes = semActual.lunes
+    appState.cacheReporteSemanal[semActual.lunes] = res.practicantes || []
+    appState.practicantesReporteSemana = null
+
     localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(res.supervisor))
 
     mostrarToast(`¡Bienvenido/a, ${res.supervisor.usuario}!`, 'success')
     mostrarDashboard()
+    poblarSelectorSemanas()
     renderizarTodo()
   } catch (err) {
     mostrarToast(err.message || 'Error al iniciar sesión', 'error')
@@ -262,6 +304,10 @@ async function iniciarSesion(e) {
 function cerrarSesion() {
   appState.supervisor = null
   appState.practicantes = []
+  appState.semanasDisponibles = []
+  appState.semanaSeleccionadaLunes = null
+  appState.practicantesReporteSemana = null
+  appState.cacheReporteSemanal = {}
   localStorage.removeItem(STORAGE_KEY_USER)
   mostrarLogin()
   mostrarToast('Sesión cerrada.', 'warning')
@@ -276,6 +322,16 @@ async function recargarDatos() {
     )
     appState.practicantes = res.practicantes || []
     appState.feriado = res.feriado || { esFeriado: false }
+    if (res.semanasDisponibles && res.semanasDisponibles.length > 0) {
+      appState.semanasDisponibles = res.semanasDisponibles
+    }
+    const semActual =
+      appState.semanasDisponibles.find((s) => s.esActual) ||
+      appState.semanasDisponibles[0]
+    if (semActual) {
+      appState.cacheReporteSemanal[semActual.lunes] = res.practicantes || []
+    }
+    poblarSelectorSemanas()
     renderizarTodo()
     mostrarToast('Datos actualizados.', 'success')
   } catch (err) {
@@ -356,14 +412,237 @@ function actualizarMinutosEnVivo() {
     hour12: false,
   })
 
-  appState.practicantes.forEach((p) => {
-    if (p.entrada && !p.salida) {
-      p.minutosHoy = calcularMinutosEntreHoras(ahoraStr, p.entrada.hora)
-      huboCambios = true
-    }
+  // Obtener fecha de hoy en ISO para localizar el día actual en desgloseSemanal
+  const ahora = new Date()
+  const y = ahora.getFullYear()
+  const m = String(ahora.getMonth() + 1).padStart(2, '0')
+  const d = String(ahora.getDate()).padStart(2, '0')
+  const hoyISO = appState.fechaHoy || `${y}-${m}-${d}`
+  const diaSemanaNum = ahora.getDay()
+  const diaIndexFallback =
+    diaSemanaNum >= 1 && diaSemanaNum <= 5 ? diaSemanaNum - 1 : 0
+
+  const listasAActualizar = []
+  if (appState.practicantes && Array.isArray(appState.practicantes)) {
+    listasAActualizar.push(appState.practicantes)
+  }
+  if (
+    appState.practicantesReporteSemana &&
+    Array.isArray(appState.practicantesReporteSemana) &&
+    appState.practicantesReporteSemana !== appState.practicantes
+  ) {
+    listasAActualizar.push(appState.practicantesReporteSemana)
+  }
+
+  listasAActualizar.forEach((lista) => {
+    lista.forEach((p) => {
+      if (p.entrada && !p.salida) {
+        const transcurridos = calcularMinutosEntreHoras(
+          ahoraStr,
+          p.entrada.hora,
+        )
+        if (p.minutosHoy !== transcurridos) {
+          p.minutosHoy = transcurridos
+          huboCambios = true
+        }
+        if (p.desgloseSemanal && Array.isArray(p.desgloseSemanal)) {
+          let diaObj = p.desgloseSemanal.find((dia) => dia.fecha === hoyISO)
+          if (!diaObj && p.desgloseSemanal[diaIndexFallback]) {
+            diaObj = p.desgloseSemanal[diaIndexFallback]
+          }
+          if (diaObj && diaObj.estado === 'EN_CURSO') {
+            if (diaObj.minutos !== transcurridos) {
+              diaObj.minutos = transcurridos
+              huboCambios = true
+            }
+          }
+        }
+      }
+    })
   })
 
   if (huboCambios) renderizarTodo()
+}
+
+// ==========================================================
+// SINCRONIZADOR INLIVE: DESGLOSE SEMANAL EN MEMORIA (0ms)
+// ==========================================================
+function actualizarDesgloseSemanalEnMemoria(
+  usuarioPracticante,
+  tipoAccion,
+  datos = {},
+) {
+  if (!usuarioPracticante) return
+
+  const ahora = new Date()
+  const y = ahora.getFullYear()
+  const m = String(ahora.getMonth() + 1).padStart(2, '0')
+  const d = String(ahora.getDate()).padStart(2, '0')
+  const hoyISO = appState.fechaHoy || `${y}-${m}-${d}`
+
+  const diaSemanaNum = ahora.getDay() // 0=Dom, 1=Lun, ..., 5=Vie
+  const diaIndexFallback =
+    diaSemanaNum >= 1 && diaSemanaNum <= 5 ? diaSemanaNum - 1 : 0
+
+  // Colecciones de practicantes que deben mantenerse sincronizadas
+  const colecciones = []
+  if (appState.practicantes && Array.isArray(appState.practicantes)) {
+    colecciones.push(appState.practicantes)
+  }
+  if (
+    appState.practicantesReporteSemana &&
+    Array.isArray(appState.practicantesReporteSemana)
+  ) {
+    if (appState.practicantesReporteSemana !== appState.practicantes) {
+      colecciones.push(appState.practicantesReporteSemana)
+    }
+  }
+
+  // Sincronizar también todas las listas cacheadas de la semana actual
+  if (appState.cacheReporteSemanal) {
+    for (const semLunes in appState.cacheReporteSemanal) {
+      const listaCache = appState.cacheReporteSemanal[semLunes]
+      if (Array.isArray(listaCache) && !colecciones.includes(listaCache)) {
+        colecciones.push(listaCache)
+      }
+    }
+  }
+
+  colecciones.forEach((lista) => {
+    const p = lista.find(
+      (item) =>
+        String(item.usuario || '')
+          .trim()
+          .toLowerCase() === usuarioPracticante.trim().toLowerCase(),
+    )
+    if (!p) return
+
+    if (!p.desgloseSemanal || p.desgloseSemanal.length === 0) {
+      p.desgloseSemanal = [
+        {
+          diaNombre: 'Lun',
+          fecha: '',
+          estado: 'PENDIENTE',
+          minutos: 0,
+          horasFormateadas: '--',
+        },
+        {
+          diaNombre: 'Mar',
+          fecha: '',
+          estado: 'PENDIENTE',
+          minutos: 0,
+          horasFormateadas: '--',
+        },
+        {
+          diaNombre: 'Mié',
+          fecha: '',
+          estado: 'PENDIENTE',
+          minutos: 0,
+          horasFormateadas: '--',
+        },
+        {
+          diaNombre: 'Jue',
+          fecha: '',
+          estado: 'PENDIENTE',
+          minutos: 0,
+          horasFormateadas: '--',
+        },
+        {
+          diaNombre: 'Vie',
+          fecha: '',
+          estado: 'PENDIENTE',
+          minutos: 0,
+          horasFormateadas: '--',
+        },
+      ]
+    }
+
+    let diaObj = p.desgloseSemanal.find((dia) => dia.fecha === hoyISO)
+    if (!diaObj && p.desgloseSemanal[diaIndexFallback]) {
+      diaObj = p.desgloseSemanal[diaIndexFallback]
+    }
+    if (!diaObj) return
+
+    const metaDiariaMin = p.metaDiariaMinutos || 240
+    const metaSemanalMin = p.metaSemanalMinutos || 1200
+
+    if (tipoAccion === 'ENTRADA') {
+      const horaMarcada =
+        datos.hora || new Date().toLocaleTimeString('es-PE', { hour12: false })
+      const ahoraStr = new Date().toLocaleTimeString('es-PE', { hour12: false })
+      const transcurridos = calcularMinutosEntreHoras(ahoraStr, horaMarcada)
+      diaObj.estado = 'EN_CURSO'
+      diaObj.horaEntradaReal = horaMarcada
+      diaObj.horaSalidaReal = null
+      diaObj.minutos = transcurridos
+      p.minutosHoy = transcurridos
+      diaObj.horasFormateadas = '--'
+      diaObj.puntualidad = obtenerPuntualidad(diaObj, p, 5)
+    } else if (tipoAccion === 'SALIDA') {
+      diaObj.estado = 'COMPLETADO'
+      diaObj.horaSalidaReal =
+        datos.hora || new Date().toLocaleTimeString('es-PE', { hour12: false })
+      diaObj.minutos = datos.minutosSesion || 0
+      diaObj.horasFormateadas = formatearMinutos(diaObj.minutos)
+      diaObj.cumplioMeta = diaObj.minutos >= metaDiariaMin
+    } else if (tipoAccion === 'ANULAR_SALIDA') {
+      const horaEntrada =
+        (p.entrada ? p.entrada.hora : null) || diaObj.horaEntradaReal || ''
+      const ahoraStr = new Date().toLocaleTimeString('es-PE', { hour12: false })
+      const transcurridos = horaEntrada
+        ? calcularMinutosEntreHoras(ahoraStr, horaEntrada)
+        : 0
+      diaObj.estado = 'EN_CURSO'
+      diaObj.horaSalidaReal = null
+      diaObj.minutos = transcurridos
+      p.minutosHoy = transcurridos
+      diaObj.horasFormateadas = '--'
+      diaObj.cumplioMeta = false
+    } else if (tipoAccion === 'ANULAR_ENTRADA') {
+      diaObj.estado = 'PENDIENTE'
+      diaObj.horaEntradaReal = null
+      diaObj.horaSalidaReal = null
+      diaObj.minutos = 0
+      diaObj.horasFormateadas = '--'
+      diaObj.puntualidad = null
+      diaObj.cumplioMeta = false
+    } else if (tipoAccion === 'INCIDENCIA') {
+      const esPermiso = datos.tipo === 'PERMISO'
+      diaObj.estado = esPermiso ? 'PERMISO_COMPUTADO' : 'FALTA'
+      diaObj.minutos = esPermiso ? metaDiariaMin : 0
+      diaObj.horasFormateadas = formatearMinutos(diaObj.minutos)
+      diaObj.horaEntradaReal = null
+      diaObj.horaSalidaReal = null
+      diaObj.puntualidad = null
+      diaObj.cumplioMeta = esPermiso
+    } else if (tipoAccion === 'ANULAR_INCIDENCIA') {
+      diaObj.estado = 'PENDIENTE'
+      diaObj.minutos = 0
+      diaObj.horasFormateadas = '--'
+      diaObj.cumplioMeta = false
+    }
+
+    // Recalcular minutos de la semana sumando días computados
+    let totalSemana = 0
+    p.desgloseSemanal.forEach((d) => {
+      if (
+        d.estado === 'COMPLETADO' ||
+        d.estado === 'FERIADO' ||
+        d.estado === 'PERMISO_COMPUTADO'
+      ) {
+        totalSemana += d.minutos || 0
+      }
+    })
+    p.minutosSemanaTotal = totalSemana
+
+    // Recalcular saldo semanal
+    const diaHoyIdx = p.desgloseSemanal.findIndex((d) => d.fecha === hoyISO)
+    if (diaHoyIdx >= 0) {
+      p.saldoSemanalMinutos = totalSemana - metaDiariaMin * (diaHoyIdx + 1)
+    } else {
+      p.saldoSemanalMinutos = totalSemana - metaSemanalMin
+    }
+  })
 }
 
 function renderizarTodo() {
@@ -624,19 +903,347 @@ function renderizarPanelHoy() {
 // ==========================================================
 // RENDERIZADO: PANEL 2 - REPORTE Y BALANCE SEMANAL
 // ==========================================================
+
+function obtenerLunesActualISO() {
+  const ahora = new Date()
+  const diaSemana = ahora.getDay()
+  const diffAlLunes = ahora.getDate() - diaSemana + (diaSemana === 0 ? -6 : 1)
+  const lunes = new Date(ahora.setDate(diffAlLunes))
+  const y = lunes.getFullYear()
+  const m = String(lunes.getMonth() + 1).padStart(2, '0')
+  const d = String(lunes.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+function generarSemanasLocales() {
+  const semanas = []
+  const ahora = new Date()
+  const diaSemana = ahora.getDay()
+  const diffAlLunesActual =
+    ahora.getDate() - diaSemana + (diaSemana === 0 ? -6 : 1)
+  const lunesActual = new Date(new Date().setDate(diffAlLunesActual))
+  lunesActual.setHours(12, 0, 0, 0)
+
+  // Generar semanas desde el 1 de enero del año actual hasta la semana actual
+  const inicioAno = new Date(lunesActual.getFullYear(), 0, 1, 12, 0, 0)
+  const diaSemIni = inicioAno.getDay()
+  const diffIni = inicioAno.getDate() - diaSemIni + (diaSemIni === 0 ? -6 : 1)
+  const cursor = new Date(inicioAno.setDate(diffIni))
+  cursor.setHours(12, 0, 0, 0)
+
+  const mesesNombres = [
+    'Ene',
+    'Feb',
+    'Mar',
+    'Abr',
+    'May',
+    'Jun',
+    'Jul',
+    'Ago',
+    'Set',
+    'Oct',
+    'Nov',
+    'Dic',
+  ]
+  const pad = (n) => String(n).padStart(2, '0')
+
+  while (cursor <= lunesActual) {
+    const lStr = `${cursor.getFullYear()}-${pad(cursor.getMonth() + 1)}-${pad(cursor.getDate())}`
+    const vDate = new Date(cursor)
+    vDate.setDate(cursor.getDate() + 4)
+    const vStr = `${vDate.getFullYear()}-${pad(vDate.getMonth() + 1)}-${pad(vDate.getDate())}`
+    const esActual = cursor.getTime() === lunesActual.getTime()
+
+    const etiqueta = `${cursor.getDate()} ${mesesNombres[cursor.getMonth()]} - ${vDate.getDate()} ${mesesNombres[vDate.getMonth()]} ${vDate.getFullYear()}${esActual ? ' (Esta semana)' : ''}`
+
+    semanas.push({
+      lunes: lStr,
+      viernes: vStr,
+      etiqueta: etiqueta,
+      esActual: esActual,
+    })
+
+    cursor.setDate(cursor.getDate() + 7)
+  }
+
+  return semanas.reverse()
+}
+
+function toggleDropdownSemanas(e) {
+  if (e) e.stopPropagation()
+  const container = document.getElementById('dropdown-semanas-container')
+  const menu = document.getElementById('menu-semanas-dropdown')
+  const trigger = document.getElementById('btn-dropdown-semanas')
+  if (!container || !menu) return
+
+  const isOpen = container.classList.contains('open')
+  if (isOpen) {
+    cerrarDropdownSemanas()
+  } else {
+    container.classList.add('open')
+    menu.classList.remove('hidden')
+    if (trigger) trigger.setAttribute('aria-expanded', 'true')
+  }
+}
+
+function cerrarDropdownSemanas() {
+  const container = document.getElementById('dropdown-semanas-container')
+  const menu = document.getElementById('menu-semanas-dropdown')
+  const trigger = document.getElementById('btn-dropdown-semanas')
+  if (container) container.classList.remove('open')
+  if (menu) menu.classList.add('hidden')
+  if (trigger) trigger.setAttribute('aria-expanded', 'false')
+}
+
+// Cierre automático al hacer clic en cualquier lugar fuera del dropdown
+document.addEventListener('click', (e) => {
+  const container = document.getElementById('dropdown-semanas-container')
+  if (container && !container.contains(e.target)) {
+    cerrarDropdownSemanas()
+  }
+})
+
+function poblarSelectorSemanas() {
+  const menu = document.getElementById('menu-semanas-dropdown')
+  const labelActiva = document.getElementById('label-semana-activa')
+
+  if (
+    !appState.semanasDisponibles ||
+    appState.semanasDisponibles.length === 0
+  ) {
+    appState.semanasDisponibles = generarSemanasLocales()
+  }
+
+  if (!appState.semanaSeleccionadaLunes) {
+    const semActual = appState.semanasDisponibles.find((s) => s.esActual)
+    appState.semanaSeleccionadaLunes = semActual
+      ? semActual.lunes
+      : appState.semanasDisponibles[0].lunes
+  }
+
+  const semSeleccionada = appState.semanasDisponibles.find(
+    (s) => s.lunes === appState.semanaSeleccionadaLunes,
+  )
+  if (labelActiva && semSeleccionada) {
+    labelActiva.textContent = semSeleccionada.etiqueta
+  }
+
+  if (!menu) return
+  menu.innerHTML = ''
+
+  appState.semanasDisponibles.forEach((sem) => {
+    const item = document.createElement('div')
+    const esActivo = sem.lunes === appState.semanaSeleccionadaLunes
+    item.className = `custom-dropdown-item ${esActivo ? 'active' : ''}`
+
+    let badgeHtml = ''
+    if (sem.esActual) {
+      badgeHtml = `<span class="item-badge-actual">Esta semana</span>`
+    }
+
+    let checkHtml = esActivo ? `<span class="item-check-icon">✓</span>` : ''
+
+    item.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span>${sem.etiqueta.replace(' (Esta semana)', '')}</span>
+        ${badgeHtml}
+      </div>
+      ${checkHtml}
+    `
+
+    item.onclick = (e) => {
+      e.stopPropagation()
+      cerrarDropdownSemanas()
+      seleccionarSemana(sem.lunes)
+    }
+
+    menu.appendChild(item)
+  })
+
+  actualizarEstadoBotonesNavegacion()
+}
+
+function actualizarEstadoBotonesNavegacion() {
+  const btnAnt = document.getElementById('btn-semana-ant')
+  const btnSig = document.getElementById('btn-semana-sig')
+  const btnHoy = document.getElementById('btn-semana-hoy')
+
+  if (!btnAnt || !btnSig || !appState.semanasDisponibles) return
+
+  const idxActual = appState.semanasDisponibles.findIndex(
+    (s) => s.lunes === appState.semanaSeleccionadaLunes,
+  )
+
+  btnSig.disabled = idxActual <= 0
+  btnAnt.disabled = idxActual >= appState.semanasDisponibles.length - 1
+
+  const semActual = appState.semanasDisponibles.find((s) => s.esActual)
+  const esEstaSemana =
+    semActual && semActual.lunes === appState.semanaSeleccionadaLunes
+  if (btnHoy) {
+    btnHoy.style.display = esEstaSemana ? 'none' : 'inline-flex'
+  }
+}
+
+async function seleccionarSemana(fechaLunes) {
+  if (!fechaLunes) return
+  appState.semanaSeleccionadaLunes = fechaLunes
+
+  // Si está en caché local, actualizar en 0ms
+  if (appState.cacheReporteSemanal[fechaLunes]) {
+    appState.practicantesReporteSemana =
+      appState.cacheReporteSemanal[fechaLunes]
+    renderizarPanelReporte()
+    poblarSelectorSemanas()
+    actualizarEstadoBotonesNavegacion()
+    return
+  }
+
+  // Si es la semana actual y ya tenemos los practicantes cargados
+  const semActual = appState.semanasDisponibles.find((s) => s.esActual)
+  if (
+    semActual &&
+    semActual.lunes === fechaLunes &&
+    appState.practicantes &&
+    appState.practicantes.length > 0
+  ) {
+    appState.practicantesReporteSemana = appState.practicantes
+    appState.cacheReporteSemanal[fechaLunes] = appState.practicantes
+    renderizarPanelReporte()
+    poblarSelectorSemanas()
+    actualizarEstadoBotonesNavegacion()
+    return
+  }
+
+  mostrarLoading('Cargando registros de la semana...')
+  try {
+    const res = await llamarAppsScript(
+      {
+        accion: 'obtener_reporte_semana',
+        usuario: appState.supervisor.usuario,
+        fechaLunes: fechaLunes,
+      },
+      false,
+    )
+
+    ocultarLoading()
+    if (res && res.practicantes) {
+      appState.practicantesReporteSemana = res.practicantes
+      appState.cacheReporteSemanal[fechaLunes] = res.practicantes
+      if (res.semanasDisponibles && res.semanasDisponibles.length > 0) {
+        appState.semanasDisponibles = res.semanasDisponibles
+      }
+      renderizarPanelReporte()
+      poblarSelectorSemanas()
+    }
+  } catch (err) {
+    ocultarLoading()
+    console.warn('Fallo al obtener reporte de semana:', err)
+    mostrarToast(
+      'No se pudo descargar la semana seleccionada por conexión o DNS. Mostrando datos disponibles.',
+      'warning',
+    )
+  }
+}
+
+function navegarSemana(delta) {
+  if (!appState.semanasDisponibles || appState.semanasDisponibles.length === 0)
+    return
+  const idxActual = appState.semanasDisponibles.findIndex(
+    (s) => s.lunes === appState.semanaSeleccionadaLunes,
+  )
+  const nuevoIdx = idxActual - delta
+  if (nuevoIdx >= 0 && nuevoIdx < appState.semanasDisponibles.length) {
+    seleccionarSemana(appState.semanasDisponibles[nuevoIdx].lunes)
+  }
+}
+
+function irASemanaActual() {
+  if (!appState.semanasDisponibles || appState.semanasDisponibles.length === 0)
+    return
+  const semActual =
+    appState.semanasDisponibles.find((s) => s.esActual) ||
+    appState.semanasDisponibles[0]
+  if (semActual) {
+    seleccionarSemana(semActual.lunes)
+  }
+}
+
+function obtenerPuntualidad(d, p, toleranciaMin = 5) {
+  if (d.puntualidad) return d.puntualidad
+  const horaEntrada = d.horaEntradaReal || (d.entrada && d.entrada.hora)
+  const horaOficial = p.horaEntradaOficial
+  if (!horaEntrada || !horaOficial) return null
+
+  const extraerMin = (val) => {
+    const match = String(val).match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/)
+    if (!match) return 0
+    return parseInt(match[1], 10) * 60 + parseInt(match[2], 10)
+  }
+
+  const realMin = extraerMin(horaEntrada)
+  const oficialMin = extraerMin(horaOficial)
+  const diff = realMin - oficialMin
+
+  if (diff <= 0) {
+    return {
+      estado: 'TEMPRANO',
+      texto: 'TEMPRANO',
+      nivel: 'verde',
+      minutosTarde: 0,
+    }
+  } else if (diff <= toleranciaMin) {
+    return {
+      estado: 'TOLERANCIA',
+      texto: 'TEMPRANO',
+      nivel: 'naranja',
+      minutosTarde: diff,
+    }
+  } else {
+    return {
+      estado: 'TARDE',
+      texto: 'TARDE',
+      nivel: 'rojo',
+      minutosTarde: diff,
+    }
+  }
+}
+
 function renderizarPanelReporte() {
   const tbody = document.getElementById('tabla-semanal-body')
   tbody.innerHTML = ''
 
-  if (!appState.practicantes || appState.practicantes.length === 0) return
+  poblarSelectorSemanas()
+
+  const listaPracticantes =
+    appState.practicantesReporteSemana || appState.practicantes
+  if (!listaPracticantes || listaPracticantes.length === 0) return
+
+  // Actualizar los encabezados de los días con sus fechas
+  const primerDesglose = listaPracticantes[0]?.desgloseSemanal
+  if (primerDesglose && primerDesglose.length === 5) {
+    const nombresDiasBase = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie']
+    primerDesglose.forEach((dia, i) => {
+      const thEl = document.getElementById(`th-dia-${i}`)
+      if (thEl) {
+        let diaNum = ''
+        if (dia.fecha) {
+          const partes = dia.fecha.split('-')
+          diaNum = partes[2] ? ` ${parseInt(partes[2], 10)}` : ''
+        }
+        thEl.textContent = `${nombresDiasBase[i]}${diaNum}`
+      }
+    })
+  }
 
   let sumaMinutosEquipo = 0
   let sumaMetasEquipo = 0
 
-  appState.practicantes.forEach((p) => {
+  listaPracticantes.forEach((p) => {
     const totalSemanaMin = p.minutosSemanaTotal || 0
     const metaSemanalMin = p.metaSemanalMinutos || 1200
     const saldoMin = p.saldoSemanalMinutos || 0
+    const metaDiariaMin = p.metaDiariaMinutos || 240
 
     sumaMinutosEquipo += totalSemanaMin
     sumaMetasEquipo += metaSemanalMin
@@ -645,16 +1252,92 @@ function renderizarPanelReporte() {
     if (p.desgloseSemanal && p.desgloseSemanal.length > 0) {
       celdasDiasHtml = p.desgloseSemanal
         .map((d) => {
+          const punt = obtenerPuntualidad(d, p, 5)
+          let tagPuntHtml = ''
+
+          if (punt) {
+            const clasePunt =
+              punt.nivel === 'verde'
+                ? 'temprano-verde'
+                : punt.nivel === 'naranja'
+                  ? 'temprano-naranja'
+                  : 'tarde-rojo'
+            const titlePunt =
+              punt.nivel === 'naranja'
+                ? `Ingresó dentro del margen de tolerancia (${punt.minutosTarde}m)`
+                : punt.nivel === 'rojo'
+                  ? `Llegó tarde (${punt.minutosTarde}m)`
+                  : 'Llegó a tiempo'
+            tagPuntHtml = `<span class="tag-puntualidad ${clasePunt}" title="${titlePunt}">${punt.texto}</span>`
+          }
+
           if (d.estado === 'COMPLETADO') {
-            return `<td><span class="cell-pill cell-completed">${d.horasFormateadas}</span></td>`
-          } else if (d.estado === 'FERIADO') {
-            return `<td><span class="cell-pill cell-holiday">Feriado</span></td>`
-          } else if (d.estado === 'PERMISO_COMPUTADO') {
-            return `<td><span class="cell-pill cell-completed">Permiso</span></td>`
+            const cumplioMeta = (d.minutos || 0) >= metaDiariaMin
+            const claseTiempo = cumplioMeta ? 'cumplido' : 'no-cumplido'
+            return `
+              <td>
+                <div class="celda-dia-stack">
+                  ${tagPuntHtml}
+                  <span class="tiempo-dia ${claseTiempo}">${d.horasFormateadas || formatearMinutos(d.minutos)}</span>
+                </div>
+              </td>
+            `
           } else if (d.estado === 'EN_CURSO') {
-            return `<td><span class="cell-pill cell-current">En curso</span></td>`
+            let minutosEnCurso = d.minutos || 0
+            if (minutosEnCurso === 0) {
+              const hEntrada =
+                d.horaEntradaReal || (p.entrada ? p.entrada.hora : null)
+              if (hEntrada) {
+                const ahoraStr = new Date().toLocaleTimeString('es-PE', {
+                  hour12: false,
+                })
+                minutosEnCurso = calcularMinutosEntreHoras(ahoraStr, hEntrada)
+                d.minutos = minutosEnCurso
+              }
+            }
+            return `
+              <td>
+                <div class="celda-dia-stack">
+                  ${tagPuntHtml}
+                  <span class="cell-pill cell-current">En curso (${formatearMinutos(minutosEnCurso)})</span>
+                </div>
+              </td>
+            `
+          } else if (d.estado === 'FERIADO') {
+            return `
+              <td>
+                <div class="celda-dia-stack">
+                  <span class="cell-pill cell-holiday">Feriado</span>
+                  <span class="tiempo-dia cumplido">${formatearMinutos(d.minutos)}</span>
+                </div>
+              </td>
+            `
+          } else if (d.estado === 'PERMISO_COMPUTADO') {
+            return `
+              <td>
+                <div class="celda-dia-stack">
+                  <span class="cell-pill cell-completed">Permiso</span>
+                  <span class="tiempo-dia cumplido">${formatearMinutos(d.minutos)}</span>
+                </div>
+              </td>
+            `
+          } else if (d.estado === 'FALTA') {
+            return `
+              <td>
+                <div class="celda-dia-stack">
+                  <span class="cell-pill cell-incident">Falta</span>
+                  <span class="tiempo-dia no-cumplido">0h 00m</span>
+                </div>
+              </td>
+            `
           } else {
-            return `<td><span class="cell-pill cell-pending">--</span></td>`
+            return `
+              <td>
+                <div class="celda-dia-stack">
+                  <span class="cell-pill cell-pending">--</span>
+                </div>
+              </td>
+            `
           }
         })
         .join('')
@@ -687,7 +1370,7 @@ function renderizarPanelReporte() {
   document.getElementById('kpi-horas-equipo').textContent =
     formatearMinutos(sumaMinutosEquipo)
   document.getElementById('kpi-practicantes-activos').textContent =
-    appState.practicantes.length
+    listaPracticantes.length
   const pctGlobal =
     sumaMetasEquipo > 0
       ? Math.round((sumaMinutosEquipo / sumaMetasEquipo) * 100)
@@ -735,6 +1418,9 @@ async function ejecutarMarcacion(usuarioPracticante, tipo, idx) {
   if (tipo === 'ENTRADA') {
     practicante.entrada = detalle
     practicante.minutosHoy = 0
+    actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ENTRADA', {
+      hora: horaVisual,
+    })
   } else {
     practicante.salida = detalle
     if (practicante.entrada) {
@@ -745,6 +1431,10 @@ async function ejecutarMarcacion(usuarioPracticante, tipo, idx) {
       practicante.minutosHoy = minutosSesion
       practicante.minutosSemanaTotal =
         (practicante.minutosSemanaTotal || 0) + minutosSesion
+      actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'SALIDA', {
+        hora: horaVisual,
+        minutosSesion: minutosSesion,
+      })
     }
   }
 
@@ -780,6 +1470,11 @@ async function ejecutarMarcacion(usuarioPracticante, tipo, idx) {
   } catch (err) {
     // ROLLBACK
     appState.practicantes[idx] = estadoAnterior
+    if (tipo === 'ENTRADA') {
+      actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_ENTRADA')
+    } else {
+      actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_SALIDA')
+    }
     renderizarTodo()
     setSyncStatus('error', 'Error al guardar')
     mostrarToast('No se pudo guardar en Sheets: ' + err.message, 'error')
@@ -838,12 +1533,22 @@ async function confirmarAnulacion() {
       )
     }
     practicante.salida = null
+    const ahoraStr = new Date().toLocaleTimeString('es-PE', { hour12: false })
+    if (practicante.entrada) {
+      practicante.minutosHoy = calcularMinutosEntreHoras(
+        ahoraStr,
+        practicante.entrada.hora,
+      )
+    }
+    actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_SALIDA')
   } else if (tipoAnulacion === 'ENTRADA') {
     practicante.entrada = null
     practicante.salida = null
     practicante.minutosHoy = 0
+    actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_ENTRADA')
   } else if (tipoAnulacion === 'INCIDENCIA') {
     practicante.incidencia = null
+    actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_INCIDENCIA')
   }
 
   renderizarTodo()
@@ -863,6 +1568,16 @@ async function confirmarAnulacion() {
     setSyncStatus('success', 'Marcación anulada ✔')
   } catch (err) {
     appState.practicantes[idx] = estadoAnterior
+    if (tipoAnulacion === 'SALIDA') {
+      actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'SALIDA', {
+        hora: estadoAnterior.salida ? estadoAnterior.salida.hora : '',
+        minutosSesion: estadoAnterior.minutosHoy || 0,
+      })
+    } else if (tipoAnulacion === 'ENTRADA') {
+      actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ENTRADA', {
+        hora: estadoAnterior.entrada ? estadoAnterior.entrada.hora : '',
+      })
+    }
     renderizarTodo()
     setSyncStatus('error', 'Error al anular')
     mostrarToast('Error al anular en Sheets: ' + err.message, 'error')
@@ -905,6 +1620,10 @@ async function confirmarIncidencia() {
     observacion: obs,
   }
 
+  actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'INCIDENCIA', {
+    tipo: tipo,
+  })
+
   renderizarTodo()
   setSyncStatus('syncing', 'Guardando...')
 
@@ -923,6 +1642,7 @@ async function confirmarIncidencia() {
     setSyncStatus('success', 'Incidencia guardada ✔')
   } catch (err) {
     appState.practicantes[idx] = estadoAnterior
+    actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_INCIDENCIA')
     renderizarTodo()
     setSyncStatus('error', 'Error al registrar')
     mostrarToast('Error al guardar en Sheets: ' + err.message, 'error')
