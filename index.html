@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/jpeg" href="img/logo_jvn.jpg" />
+    <title>Control de Asistencia - Innovación y Desarrollo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- ========================================================
+       VISTA 1: INICIO DE SESIÓN
+       ======================================================== -->
+    <div id="vista-login">
+      <div class="login-card">
+        <div class="login-brand">
+          <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+          >
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+          </svg>
+        </div>
+        <h1 class="login-title">Control de Asistencia</h1>
+        <p class="login-subtitle">
+          Innovación y Desarrollo - Acceso Supervisores
+        </p>
+
+        <form id="form-login" onsubmit="iniciarSesion(event)">
+          <div class="form-group">
+            <label for="login-usuario">Buscar Usuario o Supervisor</label>
+            <div class="search-wrapper">
+              <div class="search-input-box">
+                <svg
+                  class="search-icon"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input
+                  type="text"
+                  id="login-usuario"
+                  class="form-control"
+                  placeholder="Busca por nombre..."
+                  autocomplete="off"
+                  required
+                  oninput="filtrarSupervisores(this.value)"
+                  onfocus="mostrarDropdownSugerencias()"
+                />
+                <button
+                  type="button"
+                  id="btn-clear-search"
+                  class="search-clear-btn"
+                  onclick="limpiarBuscador()"
+                >
+                  ✕
+                </button>
+              </div>
+              <div id="sugerencias-usuarios" class="suggestions-dropdown"></div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="login-password">Contraseña</label>
+            <input
+              type="password"
+              id="login-password"
+              class="form-control"
+              placeholder="••••••••"
+              required
+            />
+          </div>
+
+          <button
+            type="submit"
+            id="btn-login"
+            class="btn btn-primary"
+            style="width: 100%; margin-top: 8px"
+          >
+            Ingresar al Panel
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- ========================================================
+       VISTA 2: PANEL DE SUPERVISOR (DASHBOARD)
+       ======================================================== -->
+    <div id="vista-dashboard" class="hidden">
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="brand-logo">
+            <div class="brand-logo-icon">ID</div>
+            <div>
+              <div class="brand-title">Asistencia</div>
+              <div class="brand-subtitle" id="label-oficina">
+                Innovación y Desarrollo
+              </div>
+            </div>
+          </div>
+
+          <!-- Pestañas Superiores -->
+          <nav class="tabs-navigation">
+            <button
+              id="tab-btn-hoy"
+              class="tab-btn active"
+              onclick="cambiarTab('hoy')"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+              >
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="16" y1="2" x2="16" y2="6"></line>
+                <line x1="8" y1="2" x2="8" y2="6"></line>
+                <line x1="3" y1="10" x2="21" y2="10"></line>
+              </svg>
+              Asistencia de Hoy
+            </button>
+            <button
+              id="tab-btn-reporte"
+              class="tab-btn"
+              onclick="cambiarTab('reporte')"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+              >
+                <line x1="18" y1="20" x2="18" y2="10"></line>
+                <line x1="12" y1="20" x2="12" y2="4"></line>
+                <line x1="6" y1="20" x2="6" y2="14"></line>
+              </svg>
+              Reporte Semanal
+            </button>
+          </nav>
+        </div>
+
+        <div class="topbar-right">
+          <!-- Indicador InLive -->
+          <div id="sync-status" class="sync-badge hidden">
+            <span class="sync-spinner"></span>
+            <span id="sync-status-text">Guardando...</span>
+          </div>
+
+          <div class="clock-pill">
+            <span class="live-clock" id="reloj-hora">--:--:--</span>
+            <span class="live-date" id="reloj-fecha">--</span>
+          </div>
+
+          <div class="user-pill">
+            <div class="user-pill-avatar" id="avatar-inicial">S</div>
+            <span class="user-pill-name" id="user-nombre">Supervisor</span>
+          </div>
+
+          <button
+            class="btn btn-outline btn-sm"
+            onclick="recargarDatos()"
+            title="Refrescar datos"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"
+              />
+            </svg>
+            Sincronizar
+          </button>
+
+          <button
+            class="btn btn-outline btn-sm"
+            onclick="cerrarSesion()"
+            title="Cerrar sesión"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+              <polyline points="16 17 21 12 16 7"></polyline>
+              <line x1="21" y1="12" x2="9" y2="12"></line>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Banner Feriado -->
+      <div id="banner-feriado" class="holiday-banner hidden">
+        <div>
+          <strong>Día Feriado:</strong>
+          <span id="motivo-feriado">Feriado</span>.
+        </div>
+        <button
+          id="btn-toggle-feriado"
+          class="btn btn-sm btn-outline"
+          onclick="toggleForzarFeriado()"
+        >
+          Habilitar marcación extraordinaria
+        </button>
+      </div>
+
+      <!-- CONTENIDO PRINCIPAL -->
+      <main class="main-content">
+        <!-- PESTAÑA 1: ASISTENCIA DE HOY -->
+        <section id="panel-hoy">
+          <div class="dashboard-header">
+            <h2 class="section-title">Asistencia de Hoy</h2>
+            <p class="section-desc">
+              Control inmediato de entradas y salidas para la jornada de hoy.
+            </p>
+          </div>
+
+          <div id="grid-practicantes" class="grid-practicantes"></div>
+        </section>
+
+        <!-- PESTAÑA 2: REPORTE SEMANAL -->
+        <section id="panel-reporte" class="reporte-container hidden">
+          <div class="dashboard-header">
+            <h2 class="section-title">Balance Semanal (Lunes a Viernes)</h2>
+            <p class="section-desc">
+              Auditoría de horas cumplidas, feriados computados y balance de la
+              semana.
+            </p>
+          </div>
+
+          <div class="kpi-row">
+            <div class="kpi-card">
+              <div class="kpi-icon">
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+              </div>
+              <div>
+                <div class="kpi-val" id="kpi-horas-equipo">--h --m</div>
+                <div class="kpi-label">Horas trabajadas en la semana</div>
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div
+                class="kpi-icon"
+                style="
+                  background: #ecfdf5;
+                  color: #10b981;
+                  border-color: #a7f3d0;
+                "
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="9" cy="7" r="4"></circle>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                </svg>
+              </div>
+              <div>
+                <div class="kpi-val" id="kpi-practicantes-activos">0</div>
+                <div class="kpi-label">Practicantes a cargo</div>
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div
+                class="kpi-icon"
+                style="
+                  background: #eff6ff;
+                  color: #2563eb;
+                  border-color: #bfdbfe;
+                "
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+              </div>
+              <div>
+                <div class="kpi-val" id="kpi-cumplimiento-pct">0%</div>
+                <div class="kpi-label">Cumplimiento grupal de metas</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="table-card">
+            <div class="table-header-bar">
+              <div class="table-header-title">Desglose Detallado por Día</div>
+              <div class="table-header-sub">
+                Feriados y permisos autorizados computan horas como cumplidas
+              </div>
+            </div>
+            <table class="matrix-table">
+              <thead>
+                <tr>
+                  <th>Practicante</th>
+                  <th>Horario</th>
+                  <th>Lun</th>
+                  <th>Mar</th>
+                  <th>Mié</th>
+                  <th>Jue</th>
+                  <th>Vie</th>
+                  <th>Total Semana</th>
+                  <th>Meta</th>
+                  <th>Balance</th>
+                </tr>
+              </thead>
+              <tbody id="tabla-semanal-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Modal Anular -->
+    <div id="modal-anular" class="modal-backdrop hidden">
+      <div class="modal-window">
+        <h3 class="modal-title">Anular Marcación</h3>
+        <p class="modal-desc" id="anular-desc">
+          ¿Deseas revertir esta marcación?
+        </p>
+        <div class="form-group">
+          <label>Motivo de anulación (opcional):</label>
+          <input
+            type="text"
+            id="anular-motivo"
+            class="form-control"
+            placeholder="Ej. Marcado por error..."
+          />
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline btn-sm" onclick="cerrarModalAnular()">
+            Cancelar
+          </button>
+          <button
+            id="btn-confirmar-anular"
+            class="btn btn-danger btn-sm"
+            onclick="confirmarAnulacion()"
+          >
+            Confirmar Anulación
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Incidencia -->
+    <div id="modal-incidencia" class="modal-backdrop hidden">
+      <div class="modal-window">
+        <h3 class="modal-title">Registrar Ausencia o Permiso</h3>
+        <p class="modal-desc" id="incidencia-desc">
+          Registra el motivo de inasistencia del practicante hoy.
+        </p>
+        <div class="form-group">
+          <label>Tipo:</label>
+          <select id="incidencia-tipo" class="form-control">
+            <option value="FALTA_INJUSTIFICADA">
+              Falta Injustificada (0 hrs)
+            </option>
+            <option value="PERMISO_AUTORIZADO">
+              Permiso Autorizado (Computa horas)
+            </option>
+            <option value="DESCANSO_MEDICO">
+              Descanso Médico (Computa horas)
+            </option>
+            <option value="PERMISO_ESTUDIOS">
+              Permiso por Estudios / Examen
+            </option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Observaciones (opcional):</label>
+          <input
+            type="text"
+            id="incidencia-obs"
+            class="form-control"
+            placeholder="Ej. Avisó con anticipación..."
+          />
+        </div>
+        <div class="modal-actions">
+          <button
+            class="btn btn-outline btn-sm"
+            onclick="cerrarModalIncidencia()"
+          >
+            Cancelar
+          </button>
+          <button
+            class="btn btn-primary btn-sm"
+            onclick="confirmarIncidencia()"
+          >
+            Guardar
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Spinner para login / recarga manual -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+      <div class="spinner"></div>
+      <div class="loading-text" id="loading-text">Conectando...</div>
+    </div>
+
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="script.js"></script>
+  </body>
+</html>
