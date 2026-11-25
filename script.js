@@ -20,6 +20,33 @@ let appState = {
   semanaSeleccionadaLunes: null,
   practicantesReporteSemana: null,
   cacheReporteSemanal: {},
+  precargaEnCurso: false,
+  historicoCompletoCargado: false,
+  vistaReporte: 'puntualidad', // 'puntualidad' | 'horarios'
+}
+
+// ==========================================================
+// CONTROL DE SPLASH SCREEN
+// ==========================================================
+function mostrarSplashScreen(texto = 'Iniciando sistema...') {
+  const splash = document.getElementById('splash-screen')
+  const status = document.getElementById('splash-status-text')
+  if (status && texto) status.textContent = texto
+  if (splash) {
+    splash.classList.remove('hidden')
+    splash.classList.remove('fade-out')
+  }
+}
+
+function ocultarSplashScreen(delayMs = 300) {
+  const splash = document.getElementById('splash-screen')
+  if (!splash) return
+  setTimeout(() => {
+    splash.classList.add('fade-out')
+    setTimeout(() => {
+      splash.classList.add('hidden')
+    }, 450)
+  }, delayMs)
 }
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -32,7 +59,7 @@ window.addEventListener('DOMContentLoaded', () => {
       appState.supervisoresDisponibles = JSON.parse(supervisoresCached)
     } catch (e) {}
   }
-  cargarListaSupervisores()
+  const promesaSupervisores = cargarListaSupervisores()
 
   document.addEventListener('click', (e) => {
     const searchWrapper = document.querySelector('.search-wrapper')
@@ -47,13 +74,48 @@ window.addEventListener('DOMContentLoaded', () => {
   if (sesionGuardada) {
     try {
       appState.supervisor = JSON.parse(sesionGuardada)
+      mostrarSplashScreen('Cargando panel de asistencia...')
       mostrarDashboard()
-      recargarDatos()
+      recargarDatos().finally(() => {
+        ocultarSplashScreen(350)
+      })
     } catch (e) {
       localStorage.removeItem(STORAGE_KEY_USER)
+      mostrarSplashScreen('Cargando lista de usuarios...')
+      mostrarLogin()
+      Promise.allSettled([
+        promesaSupervisores,
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]).then(() => {
+        ocultarSplashScreen(300)
+      })
     }
   } else {
+    mostrarSplashScreen('Cargando lista de usuarios...')
     mostrarLogin()
+    // El splash screen del login dura al menos 2 segundos para dar tiempo a los usuarios de cargar
+    Promise.allSettled([
+      promesaSupervisores,
+      new Promise((resolve) => setTimeout(resolve, 2000)),
+    ]).then(() => {
+      ocultarSplashScreen(300)
+    })
+  }
+
+  // Listener para validación en tiempo real de coincidencia de contraseñas
+  const inputConfirmar = document.getElementById('password-confirmar')
+  const inputNueva = document.getElementById('password-nueva')
+  const errMatch = document.getElementById('password-match-error')
+  if (inputConfirmar && inputNueva && errMatch) {
+    const verificarCoincidencia = () => {
+      if (inputConfirmar.value && inputNueva.value !== inputConfirmar.value) {
+        errMatch.classList.remove('hidden')
+      } else {
+        errMatch.classList.add('hidden')
+      }
+    }
+    inputConfirmar.addEventListener('input', verificarCoincidencia)
+    inputNueva.addEventListener('input', verificarCoincidencia)
   }
 })
 
@@ -200,24 +262,48 @@ async function cargarListaSupervisores() {
 }
 
 function mostrarDropdownSugerencias() {
-  filtrarSupervisores(document.getElementById('login-usuario').value)
+  const val = document.getElementById('login-usuario').value.trim()
+  if (val.length > 0) {
+    filtrarSupervisores(val)
+  }
 }
+
 function ocultarDropdownSugerencias() {
-  document.getElementById('sugerencias-usuarios').style.display = 'none'
+  const dropdown = document.getElementById('sugerencias-usuarios')
+  if (dropdown) dropdown.style.display = 'none'
+  indiceSugerenciaActiva = -1
 }
+
+function resaltarCoincidencia(texto, query) {
+  if (!texto || !query) return texto || ''
+  const regex = new RegExp(
+    `(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`,
+    'gi',
+  )
+  return texto.replace(regex, '<strong>$1</strong>')
+}
+
+let indiceSugerenciaActiva = -1
 
 function filtrarSupervisores(texto) {
   const dropdown = document.getElementById('sugerencias-usuarios')
   const btnClear = document.getElementById('btn-clear-search')
-  btnClear.style.display = texto.trim() ? 'block' : 'none'
-
   const query = (texto || '').trim().toLowerCase()
-  dropdown.innerHTML = ''
 
-  let lista = appState.supervisoresDisponibles
-  if (!lista || lista.length === 0) {
+  if (btnClear) btnClear.style.display = query ? 'block' : 'none'
+
+  // COMPORTAMIENTO NAVEGADOR: Si no hay texto, no mostrar lista desplegable
+  if (!query) {
+    dropdown.innerHTML = ''
+    dropdown.style.display = 'none'
+    indiceSugerenciaActiva = -1
+    return
+  }
+
+  let lista = appState.supervisoresDisponibles || []
+  if (lista.length === 0) {
     dropdown.innerHTML = `
-      <div style="padding: 14px 12px; font-size: 0.82rem; color: var(--slate-500); text-align: center; display: flex; align-items: center; justify-content: center; gap: 8px;">
+      <div style="padding: 12px 14px; font-size: 0.82rem; color: var(--slate-500); text-align: center; display: flex; align-items: center; justify-content: center; gap: 8px;">
         <span class="sync-spinner"></span>
         <span>Cargando lista de supervisores...</span>
       </div>
@@ -228,40 +314,115 @@ function filtrarSupervisores(texto) {
 
   const resultados = lista.filter(
     (s) =>
-      s.usuario.toLowerCase().includes(query) ||
-      (s.nombre && s.nombre.toLowerCase().includes(query)),
+      (s.usuario && s.usuario.toLowerCase().includes(query)) ||
+      (s.nombre && s.nombre.toLowerCase().includes(query)) ||
+      (s.idSupervisor && s.idSupervisor.toLowerCase().includes(query)),
   )
 
+  dropdown.innerHTML = ''
+  indiceSugerenciaActiva = -1
+
   if (resultados.length === 0) {
-    dropdown.innerHTML = `<div style="padding: 12px; font-size: 0.82rem; color: var(--slate-400); text-align: center;">No se encontraron supervisores.</div>`
-  } else {
-    resultados.forEach((sup) => {
-      const item = document.createElement('div')
-      item.className = 'suggestion-item'
-      item.innerHTML = `
-            <div>
-              <div class="suggestion-user-title">${sup.usuario}</div>
-              <div class="suggestion-sub">${sup.nombre} • ${sup.oficina}</div>
-            </div>
-            <span class="suggestion-tag">${sup.rol}</span>
-          `
-      item.onclick = () => {
-        document.getElementById('login-usuario').value = sup.usuario
-        ocultarDropdownSugerencias()
-        document.getElementById('btn-clear-search').style.display = 'block'
-        document.getElementById('login-password').focus()
-      }
-      dropdown.appendChild(item)
-    })
+    dropdown.innerHTML = `
+      <div style="padding: 12px 14px; font-size: 0.82rem; color: var(--slate-400); text-align: center;">
+        No hay coincidencias para "<strong>${texto}</strong>"
+      </div>
+    `
+    dropdown.style.display = 'block'
+    return
   }
+
+  resultados.forEach((sup, idx) => {
+    const item = document.createElement('div')
+    item.className = 'suggestion-item'
+    item.dataset.index = idx
+
+    const nombreResaltado = resaltarCoincidencia(
+      sup.nombre || sup.usuario,
+      query,
+    )
+    const usuarioResaltado = resaltarCoincidencia(sup.usuario, query)
+
+    item.innerHTML = `
+      <div class="suggestion-left">
+        <div class="suggestion-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+        </div>
+        <div class="suggestion-text">
+          <div class="suggestion-user-title">${nombreResaltado} <span class="suggestion-id">(${usuarioResaltado})</span></div>
+          <div class="suggestion-sub">${sup.oficina || 'Innovación y Desarrollo'}</div>
+        </div>
+      </div>
+      <span class="suggestion-tag">${sup.rol || 'Supervisor'}</span>
+    `
+
+    item.onmousedown = (e) => {
+      e.preventDefault()
+      seleccionarSupervisorSugerido(sup)
+    }
+
+    dropdown.appendChild(item)
+  })
+
   dropdown.style.display = 'block'
+}
+
+function seleccionarSupervisorSugerido(sup) {
+  const input = document.getElementById('login-usuario')
+  input.value = sup.usuario
+  ocultarDropdownSugerencias()
+  const btnClear = document.getElementById('btn-clear-search')
+  if (btnClear) btnClear.style.display = 'block'
+  const passInput = document.getElementById('login-password')
+  if (passInput) passInput.focus()
+}
+
+function manejarKeydownSugerencias(e) {
+  const dropdown = document.getElementById('sugerencias-usuarios')
+  if (!dropdown || dropdown.style.display !== 'block') return
+
+  const items = dropdown.querySelectorAll('.suggestion-item')
+  if (items.length === 0) return
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    indiceSugerenciaActiva = (indiceSugerenciaActiva + 1) % items.length
+    actualizarSugerenciaActiva(items)
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    indiceSugerenciaActiva =
+      (indiceSugerenciaActiva - 1 + items.length) % items.length
+    actualizarSugerenciaActiva(items)
+  } else if (e.key === 'Enter') {
+    if (indiceSugerenciaActiva >= 0 && indiceSugerenciaActiva < items.length) {
+      e.preventDefault()
+      items[indiceSugerenciaActiva].dispatchEvent(new MouseEvent('mousedown'))
+    }
+  } else if (e.key === 'Escape') {
+    ocultarDropdownSugerencias()
+  }
+}
+
+function actualizarSugerenciaActiva(items) {
+  items.forEach((it, idx) => {
+    if (idx === indiceSugerenciaActiva) {
+      it.classList.add('active')
+      it.scrollIntoView({ block: 'nearest' })
+    } else {
+      it.classList.remove('active')
+    }
+  })
 }
 
 function limpiarBuscador() {
   const input = document.getElementById('login-usuario')
   input.value = ''
-  document.getElementById('btn-clear-search').style.display = 'none'
-  filtrarSupervisores('')
+  const btnClear = document.getElementById('btn-clear-search')
+  if (btnClear) btnClear.style.display = 'none'
+  ocultarDropdownSugerencias()
   input.focus()
 }
 
@@ -269,6 +430,8 @@ async function iniciarSesion(e) {
   e.preventDefault()
   const usuario = document.getElementById('login-usuario').value.trim()
   const contrasena = document.getElementById('login-password').value.trim()
+
+  mostrarSplashScreen('Autenticando supervisor y cargando registros...')
 
   try {
     const res = await llamarAppsScript(
@@ -287,8 +450,10 @@ async function iniciarSesion(e) {
       appState.semanasDisponibles.find((s) => s.esActual) ||
       appState.semanasDisponibles[0]
     appState.semanaSeleccionadaLunes = semActual.lunes
+    appState.cacheReporteSemanal = {}
     appState.cacheReporteSemanal[semActual.lunes] = res.practicantes || []
     appState.practicantesReporteSemana = null
+    appState.historicoCompletoCargado = false
 
     localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(res.supervisor))
 
@@ -296,26 +461,42 @@ async function iniciarSesion(e) {
     mostrarDashboard()
     poblarSelectorSemanas()
     renderizarTodo()
+
+    ocultarSplashScreen(350)
+
+    // Iniciar precarga silenciosa de las últimas 12 semanas en segundo plano
+    iniciarPrecargaSemanasRecientes()
   } catch (err) {
+    ocultarSplashScreen(100)
     mostrarToast(err.message || 'Error al iniciar sesión', 'error')
   }
 }
 
 function cerrarSesion() {
+  mostrarSplashScreen('Cerrando sesión...')
   appState.supervisor = null
   appState.practicantes = []
   appState.semanasDisponibles = []
   appState.semanaSeleccionadaLunes = null
   appState.practicantesReporteSemana = null
   appState.cacheReporteSemanal = {}
+  appState.precargaEnCurso = false
+  appState.historicoCompletoCargado = false
   localStorage.removeItem(STORAGE_KEY_USER)
   mostrarLogin()
+  setTimeout(() => {
+    ocultarSplashScreen(300)
+  }, 1500)
   mostrarToast('Sesión cerrada.', 'warning')
 }
 
 async function recargarDatos() {
   if (!appState.supervisor) return
   try {
+    // Vaciar la caché en memoria para garantizar datos 100% actualizados desde Sheets
+    appState.cacheReporteSemanal = {}
+    appState.historicoCompletoCargado = false
+
     const res = await llamarAppsScript(
       { accion: 'recargar', usuario: appState.supervisor.usuario },
       true,
@@ -334,6 +515,9 @@ async function recargarDatos() {
     poblarSelectorSemanas()
     renderizarTodo()
     mostrarToast('Datos actualizados.', 'success')
+
+    // Disparar precarga silenciosa de las últimas 12 semanas
+    iniciarPrecargaSemanasRecientes()
   } catch (err) {
     mostrarToast(err.message || 'Error al sincronizar con Sheets', 'error')
   }
@@ -343,6 +527,7 @@ function mostrarLogin() {
   document.getElementById('vista-login').classList.remove('hidden')
   document.getElementById('vista-dashboard').classList.add('hidden')
   document.getElementById('login-password').value = ''
+  ocultarDropdownSugerencias()
   cargarListaSupervisores()
 }
 
@@ -426,7 +611,14 @@ function actualizarMinutosEnVivo() {
   if (appState.practicantes && Array.isArray(appState.practicantes)) {
     listasAActualizar.push(appState.practicantes)
   }
+  const semActualInfo =
+    appState.semanasDisponibles &&
+    appState.semanasDisponibles.find((s) => s.esActual)
+  const esSemanaActual =
+    !appState.semanaSeleccionadaLunes ||
+    (semActualInfo && appState.semanaSeleccionadaLunes === semActualInfo.lunes)
   if (
+    esSemanaActual &&
     appState.practicantesReporteSemana &&
     Array.isArray(appState.practicantesReporteSemana) &&
     appState.practicantesReporteSemana !== appState.practicantes
@@ -498,12 +690,16 @@ function actualizarDesgloseSemanalEnMemoria(
     }
   }
 
-  // Sincronizar también todas las listas cacheadas de la semana actual
+  // Sincronizar únicamente la lista en caché correspondiente a la semana actual
   if (appState.cacheReporteSemanal) {
-    for (const semLunes in appState.cacheReporteSemanal) {
-      const listaCache = appState.cacheReporteSemanal[semLunes]
-      if (Array.isArray(listaCache) && !colecciones.includes(listaCache)) {
-        colecciones.push(listaCache)
+    const semActual =
+      appState.semanasDisponibles &&
+      appState.semanasDisponibles.find((s) => s.esActual)
+    const claveActual = semActual ? semActual.lunes : null
+    if (claveActual && appState.cacheReporteSemanal[claveActual]) {
+      const listaActual = appState.cacheReporteSemanal[claveActual]
+      if (Array.isArray(listaActual) && !colecciones.includes(listaActual)) {
+        colecciones.push(listaActual)
       }
     }
   }
@@ -511,7 +707,13 @@ function actualizarDesgloseSemanalEnMemoria(
   colecciones.forEach((lista) => {
     const p = lista.find(
       (item) =>
+        (item.idPracticante &&
+          String(item.idPracticante).trim().toLowerCase() ===
+            usuarioPracticante.trim().toLowerCase()) ||
         String(item.usuario || '')
+          .trim()
+          .toLowerCase() === usuarioPracticante.trim().toLowerCase() ||
+        String(item.nombre || '')
           .trim()
           .toLowerCase() === usuarioPracticante.trim().toLowerCase(),
     )
@@ -559,7 +761,12 @@ function actualizarDesgloseSemanalEnMemoria(
 
     let diaObj = p.desgloseSemanal.find((dia) => dia.fecha === hoyISO)
     if (!diaObj && p.desgloseSemanal[diaIndexFallback]) {
-      diaObj = p.desgloseSemanal[diaIndexFallback]
+      const tieneFechas = p.desgloseSemanal.some(
+        (dia) => dia.fecha && dia.fecha.length >= 10,
+      )
+      if (!tieneFechas) {
+        diaObj = p.desgloseSemanal[diaIndexFallback]
+      }
     }
     if (!diaObj) return
 
@@ -607,7 +814,10 @@ function actualizarDesgloseSemanalEnMemoria(
       diaObj.puntualidad = null
       diaObj.cumplioMeta = false
     } else if (tipoAccion === 'INCIDENCIA') {
-      const esPermiso = datos.tipo === 'PERMISO'
+      const esPermiso =
+        datos.tipo === 'PERMISO_AUTORIZADO' ||
+        datos.tipo === 'DESCANSO_MEDICO' ||
+        datos.tipo === 'PERMISO'
       diaObj.estado = esPermiso ? 'PERMISO_COMPUTADO' : 'FALTA'
       diaObj.minutos = esPermiso ? metaDiariaMin : 0
       diaObj.horasFormateadas = formatearMinutos(diaObj.minutos)
@@ -656,6 +866,12 @@ function renderizarTodo() {
 // ==========================================================
 // RENDERIZADO: PANEL 1 - ASISTENCIA DE HOY (COMPACTO & NÍTIDO)
 // ==========================================================
+function formatearHoraSinSegundos(horaStr) {
+  if (!horaStr || horaStr === '--') return '--'
+  const m = String(horaStr).match(/(\d{1,2}):(\d{2})/)
+  return m ? `${m[1].padStart(2, '0')}:${m[2]}` : horaStr
+}
+
 function renderizarPanelHoy() {
   const contenedor = document.getElementById('grid-practicantes')
   contenedor.innerHTML = ''
@@ -755,7 +971,7 @@ function renderizarPanelHoy() {
                 <span style="font-size: 0.74rem;">Meta: ${formatearMinutos(metaDiariaMin)}</span>
               </div>
               <div class="status-sub-line">
-                Horario habitual: ${p.horaEntradaOficial || '--'} a ${p.horaSalidaOficial || '--'}
+                Horario habitual: ${formatearHoraSinSegundos(p.horaEntradaOficial)} a ${formatearHoraSinSegundos(p.horaSalidaOficial)}
               </div>
             </div>
           `
@@ -773,10 +989,11 @@ function renderizarPanelHoy() {
             </div>
           `
     } else if (tieneEntrada) {
+      const hSalidaCorta = formatearHoraSinSegundos(p.horaSalidaOficial)
       actionBoxHtml = `
             <div class="action-contextual-box">
               <div class="action-row-main">
-                <button class="btn btn-danger btn-action-main" onclick="ejecutarMarcacion('${p.usuario}', 'SALIDA', ${idx})" ${esFeriadoBloqueante ? 'disabled' : ''}>
+                <button class="btn btn-danger btn-action-main" onclick="ejecutarMarcacion('${p.idPracticante || p.usuario}', 'SALIDA', ${idx})" ${esFeriadoBloqueante ? 'disabled' : ''}>
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
                     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
                     <polyline points="16 17 21 12 16 7"></polyline>
@@ -784,21 +1001,22 @@ function renderizarPanelHoy() {
                   </svg>
                   MARCAR SALIDA
                 </button>
-                <label class="checkbox-pill-subtle" title="Marcar a la hora programada">
-                  <input type="checkbox" id="chk-salida-${idx}" onchange="toggleObservacion('salida', ${idx})">
-                  <span>Oficial (${p.horaSalidaOficial})</span>
+                <label class="checkbox-pill-subtle" title="Marcar a la hora programada (${hSalidaCorta})">
+                  <input type="checkbox" id="chk-salida-${idx}">
+                  <span>A horario (${hSalidaCorta})</span>
                 </label>
               </div>
-              <div id="obs-container-salida-${idx}" class="obs-wrapper hidden">
-                <input type="text" id="obs-salida-${idx}" class="form-control form-control-sm" placeholder="Observación para salida oficial...">
+              <div class="obs-wrapper-always">
+                <input type="text" id="obs-salida-${idx}" class="form-control form-control-sm" placeholder="Comentario u observación (opcional)...">
               </div>
             </div>
           `
     } else if (!tieneIncidencia) {
+      const hEntradaCorta = formatearHoraSinSegundos(p.horaEntradaOficial)
       actionBoxHtml = `
             <div class="action-contextual-box">
               <div class="action-row-main">
-                <button class="btn btn-success btn-action-main" onclick="ejecutarMarcacion('${p.usuario}', 'ENTRADA', ${idx})" ${esFeriadoBloqueante ? 'disabled' : ''}>
+                <button class="btn btn-success btn-action-main" onclick="ejecutarMarcacion('${p.idPracticante || p.usuario}', 'ENTRADA', ${idx})" ${esFeriadoBloqueante ? 'disabled' : ''}>
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
                     <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
                     <polyline points="10 17 15 12 10 7"></polyline>
@@ -806,13 +1024,13 @@ function renderizarPanelHoy() {
                   </svg>
                   MARCAR ENTRADA
                 </button>
-                <label class="checkbox-pill-subtle" title="Marcar a la hora programada">
-                  <input type="checkbox" id="chk-entrada-${idx}" onchange="toggleObservacion('entrada', ${idx})">
-                  <span>Oficial (${p.horaEntradaOficial})</span>
+                <label class="checkbox-pill-subtle" title="Marcar a la hora programada (${hEntradaCorta})">
+                  <input type="checkbox" id="chk-entrada-${idx}">
+                  <span>A horario (${hEntradaCorta})</span>
                 </label>
               </div>
-              <div id="obs-container-entrada-${idx}" class="obs-wrapper hidden">
-                <input type="text" id="obs-entrada-${idx}" class="form-control form-control-sm" placeholder="Observación para entrada oficial...">
+              <div class="obs-wrapper-always">
+                <input type="text" id="obs-entrada-${idx}" class="form-control form-control-sm" placeholder="Comentario u observación (opcional)...">
               </div>
             </div>
           `
@@ -827,7 +1045,7 @@ function renderizarPanelHoy() {
     let footerHtml = ''
     if (tieneSalida) {
       footerHtml = `
-            <button class="btn-footer-action danger" onclick="solicitarAnulacion('${p.usuario}', '${p.salida.idRegistro || ''}', 'Salida de las ${p.salida.hora}', ${idx}, 'SALIDA')" title="Revertir la salida de hoy">
+            <button class="btn-footer-action danger" onclick="solicitarAnulacion('${p.idPracticante || p.usuario}', '${p.salida.idRegistro || ''}', 'Salida de las ${p.salida.hora}', ${idx}, 'SALIDA', '${p.nombre || p.usuario}')" title="Revertir la salida de hoy">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
                 <polyline points="1 4 1 10 7 10"></polyline>
                 <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
@@ -837,7 +1055,7 @@ function renderizarPanelHoy() {
           `
     } else if (tieneEntrada) {
       footerHtml = `
-            <button class="btn-footer-action danger" onclick="solicitarAnulacion('${p.usuario}', '${p.entrada.idRegistro || ''}', 'Entrada de las ${p.entrada.hora}', ${idx}, 'ENTRADA')" title="Revertir la entrada de hoy">
+            <button class="btn-footer-action danger" onclick="solicitarAnulacion('${p.idPracticante || p.usuario}', '${p.entrada.idRegistro || ''}', 'Entrada de las ${p.entrada.hora}', ${idx}, 'ENTRADA', '${p.nombre || p.usuario}')" title="Revertir la entrada de hoy">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
                 <polyline points="1 4 1 10 7 10"></polyline>
                 <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
@@ -847,7 +1065,7 @@ function renderizarPanelHoy() {
           `
     } else if (tieneIncidencia) {
       footerHtml = `
-            <button class="btn-footer-action danger" onclick="solicitarAnulacion('${p.usuario}', '${p.incidencia.idRegistro || ''}', 'Inasistencia', ${idx}, 'INCIDENCIA')" title="Eliminar registro de inasistencia">
+            <button class="btn-footer-action danger" onclick="solicitarAnulacion('${p.idPracticante || p.usuario}', '${p.incidencia.idRegistro || ''}', 'Inasistencia', ${idx}, 'INCIDENCIA', '${p.nombre || p.usuario}')" title="Eliminar registro de inasistencia">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
                 <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -857,7 +1075,7 @@ function renderizarPanelHoy() {
           `
     } else {
       footerHtml = `
-            <button class="btn-footer-action secondary" onclick="abrirModalIncidencia('${p.usuario}', ${idx})" title="Registrar permiso o inasistencia">
+            <button class="btn-footer-action secondary" onclick="abrirModalIncidencia('${p.idPracticante || p.usuario}', ${idx}, '${p.nombre || p.usuario}')" title="Registrar permiso o inasistencia">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="12" y1="8" x2="12" y2="12"></line>
@@ -873,12 +1091,12 @@ function renderizarPanelHoy() {
     card.innerHTML = `
             <div class="card-header">
               <div class="card-header-top">
-                <h3 class="card-name" title="${p.usuario}">${p.usuario}</h3>
+                <h3 class="card-name" title="${p.nombre || p.usuario}">${p.nombre || p.usuario}</h3>
                 ${badgeHtml}
               </div>
               <div class="card-meta">
                 <span class="card-meta-horario">
-                  Horario: <strong>${p.horaEntradaOficial || '--'} - ${p.horaSalidaOficial || '--'}</strong>
+                  Horario: <strong>${formatearHoraSinSegundos(p.horaEntradaOficial)} - ${formatearHoraSinSegundos(p.horaSalidaOficial)}</strong>
                 </span>
                 <span style="opacity: 0.4;">•</span>
                 <span class="card-meta-oficina" title="${p.oficina}">${p.oficina}</span>
@@ -971,6 +1189,7 @@ function generarSemanasLocales() {
 
 function toggleDropdownSemanas(e) {
   if (e) e.stopPropagation()
+  if (appState.precargaEnCurso) return
   const container = document.getElementById('dropdown-semanas-container')
   const menu = document.getElementById('menu-semanas-dropdown')
   const trigger = document.getElementById('btn-dropdown-semanas')
@@ -1067,6 +1286,9 @@ function actualizarEstadoBotonesNavegacion() {
   const btnAnt = document.getElementById('btn-semana-ant')
   const btnSig = document.getElementById('btn-semana-sig')
   const btnHoy = document.getElementById('btn-semana-hoy')
+  const btnDropdown = document.getElementById('btn-dropdown-semanas')
+  const spinnerDropdown = document.getElementById('spinner-dropdown-semanas')
+  const caretDropdown = document.getElementById('caret-dropdown-semanas')
 
   if (!btnAnt || !btnSig || !appState.semanasDisponibles) return
 
@@ -1074,8 +1296,30 @@ function actualizarEstadoBotonesNavegacion() {
     (s) => s.lunes === appState.semanaSeleccionadaLunes,
   )
 
-  btnSig.disabled = idxActual <= 0
-  btnAnt.disabled = idxActual >= appState.semanasDisponibles.length - 1
+  if (appState.precargaEnCurso) {
+    btnAnt.disabled = true
+    btnSig.disabled = true
+    if (btnDropdown) {
+      btnDropdown.disabled = true
+      btnDropdown.classList.add('dropdown-disabled-loading')
+      btnDropdown.setAttribute(
+        'title',
+        'Sincronizando últimas 12 semanas en segundo plano...',
+      )
+    }
+    if (spinnerDropdown) spinnerDropdown.classList.remove('hidden')
+    if (caretDropdown) caretDropdown.classList.add('hidden')
+  } else {
+    btnSig.disabled = idxActual <= 0
+    btnAnt.disabled = idxActual >= appState.semanasDisponibles.length - 1
+    if (btnDropdown) {
+      btnDropdown.disabled = false
+      btnDropdown.classList.remove('dropdown-disabled-loading')
+      btnDropdown.setAttribute('title', 'Seleccionar semana')
+    }
+    if (spinnerDropdown) spinnerDropdown.classList.add('hidden')
+    if (caretDropdown) caretDropdown.classList.remove('hidden')
+  }
 
   const semActual = appState.semanasDisponibles.find((s) => s.esActual)
   const esEstaSemana =
@@ -1089,7 +1333,7 @@ async function seleccionarSemana(fechaLunes) {
   if (!fechaLunes) return
   appState.semanaSeleccionadaLunes = fechaLunes
 
-  // Si está en caché local, actualizar en 0ms
+  // 1. Si está en caché local (RAM), actualizar de inmediato (0ms)
   if (appState.cacheReporteSemanal[fechaLunes]) {
     appState.practicantesReporteSemana =
       appState.cacheReporteSemanal[fechaLunes]
@@ -1099,7 +1343,7 @@ async function seleccionarSemana(fechaLunes) {
     return
   }
 
-  // Si es la semana actual y ya tenemos los practicantes cargados
+  // 2. Si es la semana actual y ya tenemos los practicantes cargados
   const semActual = appState.semanasDisponibles.find((s) => s.esActual)
   if (
     semActual &&
@@ -1115,38 +1359,95 @@ async function seleccionarSemana(fechaLunes) {
     return
   }
 
-  mostrarLoading('Cargando registros de la semana...')
+  // 3. Si no está en caché (semana histórica > 12 semanas), cargar todo el archivo histórico restante del supervisor de una sola vez
+  mostrarLoading('Descargando archivo histórico completo...')
   try {
     const res = await llamarAppsScript(
       {
-        accion: 'obtener_reporte_semana',
+        accion: 'obtener_reporte_historico_completo',
         usuario: appState.supervisor.usuario,
-        fechaLunes: fechaLunes,
+        excluirFechasLunes: Object.keys(appState.cacheReporteSemanal),
       },
       false,
     )
 
     ocultarLoading()
-    if (res && res.practicantes) {
-      appState.practicantesReporteSemana = res.practicantes
-      appState.cacheReporteSemanal[fechaLunes] = res.practicantes
+
+    if (res && res.success) {
+      if (res.semanas) {
+        Object.assign(appState.cacheReporteSemanal, res.semanas)
+      }
       if (res.semanasDisponibles && res.semanasDisponibles.length > 0) {
         appState.semanasDisponibles = res.semanasDisponibles
       }
+      appState.historicoCompletoCargado = true
+
+      if (appState.cacheReporteSemanal[fechaLunes]) {
+        appState.practicantesReporteSemana =
+          appState.cacheReporteSemanal[fechaLunes]
+      } else {
+        appState.practicantesReporteSemana = []
+      }
+
       renderizarPanelReporte()
       poblarSelectorSemanas()
+      actualizarEstadoBotonesNavegacion()
     }
   } catch (err) {
     ocultarLoading()
-    console.warn('Fallo al obtener reporte de semana:', err)
+    console.warn('Fallo al obtener archivo histórico:', err)
     mostrarToast(
-      'No se pudo descargar la semana seleccionada por conexión o DNS. Mostrando datos disponibles.',
+      'No se pudo descargar el archivo histórico por conexión o red.',
       'warning',
     )
   }
 }
 
+async function iniciarPrecargaSemanasRecientes() {
+  if (
+    !appState.supervisor ||
+    !appState.semanasDisponibles ||
+    appState.semanasDisponibles.length <= 1
+  ) {
+    return
+  }
+
+  // Tomar hasta las últimas 12 semanas (~3 meses)
+  const limiteSemanas = appState.semanasDisponibles.slice(0, 12)
+  const fechasLunesAPedir = limiteSemanas
+    .map((s) => s.lunes)
+    .filter((lunes) => !appState.cacheReporteSemanal[lunes])
+
+  if (fechasLunesAPedir.length === 0) {
+    return
+  }
+
+  appState.precargaEnCurso = true
+  actualizarEstadoBotonesNavegacion()
+
+  try {
+    const res = await llamarAppsScript(
+      {
+        accion: 'obtener_reporte_lote_semanas',
+        usuario: appState.supervisor.usuario,
+        fechasLunes: fechasLunesAPedir,
+      },
+      false,
+    )
+
+    if (res && res.success && res.semanas) {
+      Object.assign(appState.cacheReporteSemanal, res.semanas)
+    }
+  } catch (err) {
+    console.warn('Fallo silencioso al precargar lote de semanas:', err)
+  } finally {
+    appState.precargaEnCurso = false
+    actualizarEstadoBotonesNavegacion()
+  }
+}
+
 function navegarSemana(delta) {
+  if (appState.precargaEnCurso) return
   if (!appState.semanasDisponibles || appState.semanasDisponibles.length === 0)
     return
   const idxActual = appState.semanasDisponibles.findIndex(
@@ -1209,11 +1510,57 @@ function obtenerPuntualidad(d, p, toleranciaMin = 5) {
   }
 }
 
+function cambiarVistaReporte(nuevaVista) {
+  if (nuevaVista !== 'puntualidad' && nuevaVista !== 'horarios') return
+  appState.vistaReporte = nuevaVista
+
+  const btnPunt = document.getElementById('btn-vista-puntualidad')
+  const btnHorarios = document.getElementById('btn-vista-horarios')
+  if (btnPunt && btnHorarios) {
+    if (nuevaVista === 'horarios') {
+      btnHorarios.classList.add('active')
+      btnPunt.classList.remove('active')
+    } else {
+      btnPunt.classList.add('active')
+      btnHorarios.classList.remove('active')
+    }
+  }
+
+  renderizarPanelReporte()
+}
+
+function asegurarSegundos(horaStr) {
+  if (!horaStr) return ''
+  const partes = String(horaStr).trim().split(':')
+  if (partes.length === 2) {
+    return `${partes[0].padStart(2, '0')}:${partes[1]}:00`
+  }
+  if (partes.length >= 3) {
+    return `${partes[0].padStart(2, '0')}:${partes[1]}:${partes[2].padStart(2, '0')}`
+  }
+  return horaStr
+}
+
 function renderizarPanelReporte() {
   const tbody = document.getElementById('tabla-semanal-body')
   tbody.innerHTML = ''
 
   poblarSelectorSemanas()
+
+  // Sincronizar estado visual de los botones del control segmentado
+  const btnPunt = document.getElementById('btn-vista-puntualidad')
+  const btnHorarios = document.getElementById('btn-vista-horarios')
+  if (btnPunt && btnHorarios) {
+    if (appState.vistaReporte === 'horarios') {
+      btnHorarios.classList.add('active')
+      btnPunt.classList.remove('active')
+    } else {
+      btnPunt.classList.add('active')
+      btnHorarios.classList.remove('active')
+    }
+  }
+
+  const esVistaHorarios = appState.vistaReporte === 'horarios'
 
   const listaPracticantes =
     appState.practicantesReporteSemana || appState.practicantes
@@ -1254,6 +1601,7 @@ function renderizarPanelReporte() {
         .map((d) => {
           const punt = obtenerPuntualidad(d, p, 5)
           let tagPuntHtml = ''
+          let claseDotPunt = 'dot-verde'
 
           if (punt) {
             const clasePunt =
@@ -1262,6 +1610,12 @@ function renderizarPanelReporte() {
                 : punt.nivel === 'naranja'
                   ? 'temprano-naranja'
                   : 'tarde-rojo'
+            claseDotPunt =
+              punt.nivel === 'verde'
+                ? 'dot-verde'
+                : punt.nivel === 'naranja'
+                  ? 'dot-naranja'
+                  : 'dot-rojo'
             const titlePunt =
               punt.nivel === 'naranja'
                 ? `Ingresó dentro del margen de tolerancia (${punt.minutosTarde}m)`
@@ -1271,6 +1625,111 @@ function renderizarPanelReporte() {
             tagPuntHtml = `<span class="tag-puntualidad ${clasePunt}" title="${titlePunt}">${punt.texto}</span>`
           }
 
+          // ========================================================
+          // VISTA 2: HORARIOS E/S MINIMALISTA (PUNTOS Y SEGUNDOS)
+          // ========================================================
+          if (esVistaHorarios) {
+            if (d.estado === 'COMPLETADO') {
+              const hEntradaRaw =
+                d.horaEntradaReal || (d.entrada && d.entrada.hora)
+              const hSalidaRaw = d.horaSalidaReal || (d.salida && d.salida.hora)
+              const hEntrada = asegurarSegundos(hEntradaRaw)
+              const hSalida = asegurarSegundos(hSalidaRaw)
+              const cumplioMeta = (d.minutos || 0) >= metaDiariaMin
+              const claseDotSalida = cumplioMeta ? 'dot-verde' : 'dot-rojo'
+              const titleSalida = hSalida
+                ? `Salida: ${hSalida} (${cumplioMeta ? 'Meta cumplida' : 'Horas incompletas'})`
+                : 'Sin salida registrada'
+
+              return `
+                <td>
+                  <div class="celda-horario-minimal">
+                    <div class="linea-horario" title="Entrada: ${hEntrada || '--'} (${punt ? punt.texto : 'A tiempo'})">
+                      <span class="dot-horario ${claseDotPunt}"></span>
+                      <span>${hEntrada || '--'}</span>
+                    </div>
+                    <div class="linea-horario" title="${titleSalida}">
+                      <span class="dot-horario ${claseDotSalida}"></span>
+                      ${hSalida ? `<span>${hSalida}</span>` : `<span class="hora-no-salida">Sin salida</span>`}
+                    </div>
+                  </div>
+                </td>
+              `
+            } else if (d.estado === 'EN_CURSO') {
+              const hEntradaRaw =
+                d.horaEntradaReal || (p.entrada ? p.entrada.hora : null)
+              const hEntrada = asegurarSegundos(hEntradaRaw)
+              let minutosEnCurso = d.minutos || 0
+              if (minutosEnCurso === 0 && hEntradaRaw) {
+                const ahoraStr = new Date().toLocaleTimeString('es-PE', {
+                  hour12: false,
+                })
+                minutosEnCurso = calcularMinutosEntreHoras(
+                  ahoraStr,
+                  hEntradaRaw,
+                )
+                d.minutos = minutosEnCurso
+              }
+              return `
+                <td>
+                  <div class="celda-horario-minimal">
+                    <div class="linea-horario" title="Entrada: ${hEntrada || '--'}">
+                      <span class="dot-horario ${claseDotPunt}"></span>
+                      <span>${hEntrada || '--'}</span>
+                    </div>
+                    <div class="linea-horario" title="Jornada en curso (${formatearMinutos(minutosEnCurso)})">
+                      <span class="dot-horario dot-azul pulse"></span>
+                      <span class="hora-en-curso">En curso</span>
+                    </div>
+                  </div>
+                </td>
+              `
+            } else if (d.estado === 'FERIADO') {
+              return `
+                <td>
+                  <div class="celda-horario-minimal">
+                    <span class="cell-pill cell-holiday">Feriado</span>
+                  </div>
+                </td>
+              `
+            } else if (d.estado === 'PERMISO_COMPUTADO') {
+              return `
+                <td>
+                  <div class="celda-horario-minimal">
+                    <span class="cell-pill cell-completed">Permiso</span>
+                  </div>
+                </td>
+              `
+            } else if (d.estado === 'FALTA') {
+              return `
+                <td>
+                  <div class="celda-horario-minimal">
+                    <span class="cell-pill cell-incident">Falta</span>
+                  </div>
+                </td>
+              `
+            } else if (d.estado === 'NO_REGISTRADO') {
+              return `
+                <td>
+                  <div class="celda-horario-minimal">
+                    <span class="cell-pill cell-pending">Sin registro</span>
+                  </div>
+                </td>
+              `
+            } else {
+              return `
+                <td>
+                  <div class="celda-horario-minimal">
+                    <span class="hora-texto-muted">--</span>
+                  </div>
+                </td>
+              `
+            }
+          }
+
+          // ========================================================
+          // VISTA 1: RESUMEN Y PUNTUALIDAD (VISTA ORIGINAL)
+          // ========================================================
           if (d.estado === 'COMPLETADO') {
             const cumplioMeta = (d.minutos || 0) >= metaDiariaMin
             const claseTiempo = cumplioMeta ? 'cumplido' : 'no-cumplido'
@@ -1356,8 +1815,8 @@ function renderizarPanelReporte() {
 
     const tr = document.createElement('tr')
     tr.innerHTML = `
-          <td><strong>${p.usuario}</strong></td>
-          <td style="color: var(--slate-500);">${p.horaEntradaOficial} - ${p.horaSalidaOficial}</td>
+          <td><strong>${p.nombre || p.usuario}</strong></td>
+          <td style="color: var(--slate-500);">${formatearHoraSinSegundos(p.horaEntradaOficial)} - ${formatearHoraSinSegundos(p.horaSalidaOficial)}</td>
           ${celdasDiasHtml}
           <td><strong>${formatearMinutos(totalSemanaMin)}</strong></td>
           <td style="color: var(--slate-500);">${formatearMinutos(metaSemanalMin)}</td>
@@ -1381,7 +1840,7 @@ function renderizarPanelReporte() {
 // ==========================================================
 // EJECUTAR MARCACIÓN INLIVE (0ms DE ESPERA CON ROLLBACK)
 // ==========================================================
-async function ejecutarMarcacion(usuarioPracticante, tipo, idx) {
+async function ejecutarMarcacion(idPracticante, tipo, idx) {
   const chkId = tipo === 'ENTRADA' ? `chk-entrada-${idx}` : `chk-salida-${idx}`
   const obsId = tipo === 'ENTRADA' ? `obs-entrada-${idx}` : `obs-salida-${idx}`
 
@@ -1406,11 +1865,24 @@ async function ejecutarMarcacion(usuarioPracticante, tipo, idx) {
         : practicante.horaSalidaOficial
   }
 
+  const supervisorId =
+    appState.supervisor && appState.supervisor.idSupervisor
+      ? appState.supervisor.idSupervisor
+      : appState.supervisor
+        ? appState.supervisor.usuario
+        : 'Supervisor'
+  const supervisorNombre =
+    appState.supervisor && appState.supervisor.nombre
+      ? appState.supervisor.nombre
+      : appState.supervisor
+        ? appState.supervisor.usuario
+        : supervisorId
+
   const detalle = {
     idRegistro: 'TEMP-' + Date.now(),
     hora: horaVisual,
     modo: usarHoraOficial ? 'HORA_OFICIAL' : 'REAL',
-    registradoPor: appState.supervisor.usuario,
+    registradoPor: supervisorId,
     observacion: observacion,
   }
 
@@ -1418,7 +1890,7 @@ async function ejecutarMarcacion(usuarioPracticante, tipo, idx) {
   if (tipo === 'ENTRADA') {
     practicante.entrada = detalle
     practicante.minutosHoy = 0
-    actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ENTRADA', {
+    actualizarDesgloseSemanalEnMemoria(idPracticante, 'ENTRADA', {
       hora: horaVisual,
     })
   } else {
@@ -1431,7 +1903,7 @@ async function ejecutarMarcacion(usuarioPracticante, tipo, idx) {
       practicante.minutosHoy = minutosSesion
       practicante.minutosSemanaTotal =
         (practicante.minutosSemanaTotal || 0) + minutosSesion
-      actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'SALIDA', {
+      actualizarDesgloseSemanalEnMemoria(idPracticante, 'SALIDA', {
         hora: horaVisual,
         minutosSesion: minutosSesion,
       })
@@ -1446,11 +1918,13 @@ async function ejecutarMarcacion(usuarioPracticante, tipo, idx) {
     const res = await llamarAppsScript(
       {
         accion: 'marcar',
-        usuarioPracticante: usuarioPracticante,
+        idPracticante: idPracticante,
+        usuarioPracticante: idPracticante,
         tipo: tipo,
         usarHoraOficial: usarHoraOficial,
         observacion: observacion,
-        registradoPor: appState.supervisor.usuario,
+        registradoPor: supervisorId,
+        nombreSupervisor: supervisorNombre,
       },
       false,
     )
@@ -1471,9 +1945,9 @@ async function ejecutarMarcacion(usuarioPracticante, tipo, idx) {
     // ROLLBACK
     appState.practicantes[idx] = estadoAnterior
     if (tipo === 'ENTRADA') {
-      actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_ENTRADA')
+      actualizarDesgloseSemanalEnMemoria(idPracticante, 'ANULAR_ENTRADA')
     } else {
-      actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_SALIDA')
+      actualizarDesgloseSemanalEnMemoria(idPracticante, 'ANULAR_SALIDA')
     }
     renderizarTodo()
     setSyncStatus('error', 'Error al guardar')
@@ -1485,20 +1959,49 @@ async function ejecutarMarcacion(usuarioPracticante, tipo, idx) {
 // ANULACIÓN / DESHACER (CON ROLLBACK)
 // ==========================================================
 function solicitarAnulacion(
-  usuarioPracticante,
+  idPracticante,
   idRegistro,
   detalle,
   idx,
   tipoAnulacion,
+  nombrePracticante,
 ) {
+  // Si idRegistro aún es provisional TEMP-, verificar si ya se actualizó en memoria con el ID definitivo
+  const p = appState.practicantes && appState.practicantes[idx]
+  if (p) {
+    if (
+      tipoAnulacion === 'ENTRADA' &&
+      p.entrada &&
+      p.entrada.idRegistro &&
+      !p.entrada.idRegistro.startsWith('TEMP-')
+    ) {
+      idRegistro = p.entrada.idRegistro
+    } else if (
+      tipoAnulacion === 'SALIDA' &&
+      p.salida &&
+      p.salida.idRegistro &&
+      !p.salida.idRegistro.startsWith('TEMP-')
+    ) {
+      idRegistro = p.salida.idRegistro
+    } else if (
+      tipoAnulacion === 'INCIDENCIA' &&
+      p.incidencia &&
+      p.incidencia.idRegistro &&
+      !p.incidencia.idRegistro.startsWith('TEMP-')
+    ) {
+      idRegistro = p.incidencia.idRegistro
+    }
+  }
+
   appState.pendienteAnular = {
-    usuarioPracticante,
+    idPracticante,
     idRegistro,
     idx,
     tipoAnulacion,
+    nombrePracticante: nombrePracticante || idPracticante,
   }
   document.getElementById('anular-desc').innerHTML =
-    `¿Deseas revertir la <strong>${detalle}</strong> de <strong>${usuarioPracticante}</strong>?`
+    `¿Deseas revertir la <strong>${detalle}</strong> de <strong>${nombrePracticante || idPracticante}</strong>?`
   document.getElementById('anular-motivo').value = ''
   document.getElementById('modal-anular').classList.remove('hidden')
 }
@@ -1511,13 +2014,62 @@ function cerrarModalAnular() {
 async function confirmarAnulacion() {
   if (!appState.pendienteAnular) return
 
-  const { usuarioPracticante, idRegistro, idx, tipoAnulacion } =
+  let { idPracticante, idRegistro, idx, tipoAnulacion } =
     appState.pendienteAnular
   const motivo = document.getElementById('anular-motivo').value.trim()
   cerrarModalAnular()
 
   const practicante = appState.practicantes[idx]
   if (!practicante) return
+
+  // Re-validar si mientras el modal estuvo abierto ya llegó el ID definitivo de Sheets
+  if (
+    tipoAnulacion === 'ENTRADA' &&
+    practicante.entrada &&
+    practicante.entrada.idRegistro &&
+    !practicante.entrada.idRegistro.startsWith('TEMP-')
+  ) {
+    idRegistro = practicante.entrada.idRegistro
+  } else if (
+    tipoAnulacion === 'SALIDA' &&
+    practicante.salida &&
+    practicante.salida.idRegistro &&
+    !practicante.salida.idRegistro.startsWith('TEMP-')
+  ) {
+    idRegistro = practicante.salida.idRegistro
+  } else if (
+    tipoAnulacion === 'INCIDENCIA' &&
+    practicante.incidencia &&
+    practicante.incidencia.idRegistro &&
+    !practicante.incidencia.idRegistro.startsWith('TEMP-')
+  ) {
+    idRegistro = practicante.incidencia.idRegistro
+  }
+
+  // Si aún tiene TEMP-, significa que el guardado anterior sigue viajando en red (menos de 1 seg).
+  // Esperar brevemente (hasta 1.5 seg) a que termine de llegar el ID real de Sheets para evitar fallos
+  if (String(idRegistro).startsWith('TEMP-')) {
+    setSyncStatus('syncing', 'Esperando guardado previo...')
+    let intentos = 0
+    while (intentos < 10) {
+      await new Promise((r) => setTimeout(r, 150))
+      intentos++
+      const pActual = appState.practicantes[idx]
+      if (!pActual) break
+      let idActual = ''
+      if (tipoAnulacion === 'ENTRADA' && pActual.entrada)
+        idActual = pActual.entrada.idRegistro
+      else if (tipoAnulacion === 'SALIDA' && pActual.salida)
+        idActual = pActual.salida.idRegistro
+      else if (tipoAnulacion === 'INCIDENCIA' && pActual.incidencia)
+        idActual = pActual.incidencia.idRegistro
+
+      if (idActual && !idActual.startsWith('TEMP-')) {
+        idRegistro = idActual
+        break
+      }
+    }
+  }
 
   const estadoAnterior = JSON.parse(JSON.stringify(practicante))
 
@@ -1540,19 +2092,32 @@ async function confirmarAnulacion() {
         practicante.entrada.hora,
       )
     }
-    actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_SALIDA')
+    actualizarDesgloseSemanalEnMemoria(idPracticante, 'ANULAR_SALIDA')
   } else if (tipoAnulacion === 'ENTRADA') {
     practicante.entrada = null
     practicante.salida = null
     practicante.minutosHoy = 0
-    actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_ENTRADA')
+    actualizarDesgloseSemanalEnMemoria(idPracticante, 'ANULAR_ENTRADA')
   } else if (tipoAnulacion === 'INCIDENCIA') {
     practicante.incidencia = null
-    actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_INCIDENCIA')
+    actualizarDesgloseSemanalEnMemoria(idPracticante, 'ANULAR_INCIDENCIA')
   }
 
   renderizarTodo()
   setSyncStatus('syncing', 'Anulando...')
+
+  const supervisorId =
+    appState.supervisor && appState.supervisor.idSupervisor
+      ? appState.supervisor.idSupervisor
+      : appState.supervisor
+        ? appState.supervisor.usuario
+        : 'Supervisor'
+  const supervisorNombre =
+    appState.supervisor && appState.supervisor.nombre
+      ? appState.supervisor.nombre
+      : appState.supervisor
+        ? appState.supervisor.usuario
+        : supervisorId
 
   try {
     await llamarAppsScript(
@@ -1560,7 +2125,8 @@ async function confirmarAnulacion() {
         accion: 'anular',
         idRegistro: idRegistro,
         motivo: motivo || 'Anulado por supervisor',
-        registradoPor: appState.supervisor.usuario,
+        registradoPor: supervisorId,
+        nombreSupervisor: supervisorNombre,
       },
       false,
     )
@@ -1569,12 +2135,12 @@ async function confirmarAnulacion() {
   } catch (err) {
     appState.practicantes[idx] = estadoAnterior
     if (tipoAnulacion === 'SALIDA') {
-      actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'SALIDA', {
+      actualizarDesgloseSemanalEnMemoria(idPracticante, 'SALIDA', {
         hora: estadoAnterior.salida ? estadoAnterior.salida.hora : '',
         minutosSesion: estadoAnterior.minutosHoy || 0,
       })
     } else if (tipoAnulacion === 'ENTRADA') {
-      actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ENTRADA', {
+      actualizarDesgloseSemanalEnMemoria(idPracticante, 'ENTRADA', {
         hora: estadoAnterior.entrada ? estadoAnterior.entrada.hora : '',
       })
     }
@@ -1587,11 +2153,16 @@ async function confirmarAnulacion() {
 // ==========================================================
 // INCIDENCIAS / AUSENCIAS
 // ==========================================
-function abrirModalIncidencia(usuarioPracticante, idx) {
-  appState.pendienteIncidencia = { usuarioPracticante, idx }
+function abrirModalIncidencia(idPracticante, idx, nombrePracticante) {
+  appState.pendienteIncidencia = {
+    idPracticante,
+    idx,
+    nombrePracticante: nombrePracticante || idPracticante,
+  }
   document.getElementById('incidencia-desc').textContent =
-    `Registrar falta o inasistencia para: ${usuarioPracticante}.`
+    `Registrar falta o inasistencia para: ${nombrePracticante || idPracticante}.`
   document.getElementById('incidencia-obs').value = ''
+  actualizarInfoTipoIncidencia()
   document.getElementById('modal-incidencia').classList.remove('hidden')
 }
 
@@ -1600,10 +2171,57 @@ function cerrarModalIncidencia() {
   document.getElementById('modal-incidencia').classList.add('hidden')
 }
 
+function actualizarInfoTipoIncidencia() {
+  const select = document.getElementById('incidencia-tipo')
+  const box = document.getElementById('incidencia-tipo-desc-box')
+  if (!select || !box) return
+
+  const valor = select.value
+  const descripciones = {
+    PERMISO_AUTORIZADO: {
+      clase: 'computa',
+      icono: '✔',
+      titulo: 'Computa horas completas',
+      texto:
+        'Cubre el 100% de la meta diaria (ej. 4h 30m). No perjudica el saldo semanal ni genera déficit.',
+    },
+    DESCANSO_MEDICO: {
+      clase: 'computa',
+      icono: '✔',
+      titulo: 'Justificación médica (Computa horas)',
+      texto:
+        'Constancia formal de salud. Las horas de la jornada se computan como cumplidas en el reporte semanal.',
+    },
+    FALTA_INJUSTIFICADA: {
+      clase: 'falta',
+      icono: '⚠',
+      titulo: 'No computa horas (0h)',
+      texto:
+        'Ausencia sin justificar. Genera balance negativo en el balance semanal correspondiente a la meta del día.',
+    },
+    PERMISO_ESTUDIOS: {
+      clase: 'neutro',
+      icono: 'ℹ',
+      titulo: 'Constancia académica (0h)',
+      texto:
+        'Queda asentado el motivo académico en la auditoría, pero no suma horas al balance semanal.',
+    },
+  }
+
+  const info = descripciones[valor] || descripciones.PERMISO_AUTORIZADO
+  box.className = `incidencia-helper-box ${info.clase}`
+  box.innerHTML = `
+    <span class="helper-icon">${info.icono}</span>
+    <div>
+      <strong>${info.titulo}:</strong> ${info.texto}
+    </div>
+  `
+}
+
 async function confirmarIncidencia() {
   if (!appState.pendienteIncidencia) return
 
-  const { usuarioPracticante, idx } = appState.pendienteIncidencia
+  const { idPracticante, idx } = appState.pendienteIncidencia
   const tipo = document.getElementById('incidencia-tipo').value
   const obs = document.getElementById('incidencia-obs').value.trim()
   cerrarModalIncidencia()
@@ -1620,29 +2238,53 @@ async function confirmarIncidencia() {
     observacion: obs,
   }
 
-  actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'INCIDENCIA', {
+  actualizarDesgloseSemanalEnMemoria(idPracticante, 'INCIDENCIA', {
     tipo: tipo,
   })
 
   renderizarTodo()
   setSyncStatus('syncing', 'Guardando...')
 
+  const supervisorId =
+    appState.supervisor && appState.supervisor.idSupervisor
+      ? appState.supervisor.idSupervisor
+      : appState.supervisor
+        ? appState.supervisor.usuario
+        : 'Supervisor'
+  const supervisorNombre =
+    appState.supervisor && appState.supervisor.nombre
+      ? appState.supervisor.nombre
+      : appState.supervisor
+        ? appState.supervisor.usuario
+        : supervisorId
+
   try {
-    await llamarAppsScript(
+    const res = await llamarAppsScript(
       {
         accion: 'reportar_incidencia',
-        usuarioPracticante: usuarioPracticante,
+        idPracticante: idPracticante,
+        usuarioPracticante: idPracticante,
         tipoIncidencia: tipo,
         observacion: obs || 'Reportado por supervisor',
-        registradoPor: appState.supervisor.usuario,
+        registradoPor: supervisorId,
+        nombreSupervisor: supervisorNombre,
       },
       false,
     )
 
+    if (
+      res &&
+      res.registro &&
+      res.registro.idRegistro &&
+      practicante.incidencia
+    ) {
+      practicante.incidencia.idRegistro = res.registro.idRegistro
+    }
+
     setSyncStatus('success', 'Incidencia guardada ✔')
   } catch (err) {
     appState.practicantes[idx] = estadoAnterior
-    actualizarDesgloseSemanalEnMemoria(usuarioPracticante, 'ANULAR_INCIDENCIA')
+    actualizarDesgloseSemanalEnMemoria(idPracticante, 'ANULAR_INCIDENCIA')
     renderizarTodo()
     setSyncStatus('error', 'Error al registrar')
     mostrarToast('Error al guardar en Sheets: ' + err.message, 'error')
@@ -1685,4 +2327,104 @@ function mostrarToast(mensaje, tipo = 'info') {
     toast.style.transition = 'all 0.3s ease'
     setTimeout(() => toast.remove(), 300)
   }, 4000)
+}
+
+// ==========================================
+// GESTIÓN DE CAMBIO DE CONTRASEÑA
+// ==========================================
+
+function abrirModalCambiarPassword() {
+  const modal = document.getElementById('modal-cambiar-password')
+  if (!modal) return
+  document.getElementById('password-actual').value = ''
+  document.getElementById('password-nueva').value = ''
+  document.getElementById('password-confirmar').value = ''
+  const errMatch = document.getElementById('password-match-error')
+  if (errMatch) errMatch.classList.add('hidden')
+  modal.classList.remove('hidden')
+  setTimeout(() => {
+    const inputActual = document.getElementById('password-actual')
+    if (inputActual) inputActual.focus()
+  }, 100)
+}
+
+function cerrarModalCambiarPassword() {
+  const modal = document.getElementById('modal-cambiar-password')
+  if (modal) modal.classList.add('hidden')
+}
+
+async function ejecutarCambioPassword(e) {
+  if (e) e.preventDefault()
+  if (!appState.supervisor) {
+    mostrarToast('No hay sesión activa.', 'error')
+    return
+  }
+
+  const pActual = document.getElementById('password-actual').value.trim()
+  const pNueva = document.getElementById('password-nueva').value.trim()
+  const pConfirmar = document.getElementById('password-confirmar').value.trim()
+  const errMatch = document.getElementById('password-match-error')
+  const btnGuardar = document.getElementById('btn-guardar-password')
+
+  if (pNueva !== pConfirmar) {
+    if (errMatch) errMatch.classList.remove('hidden')
+    mostrarToast('La confirmación de la contraseña no coincide.', 'error')
+    return
+  }
+  if (errMatch) errMatch.classList.add('hidden')
+
+  if (pNueva.length < 6) {
+    mostrarToast(
+      'La nueva contraseña debe tener al menos 6 caracteres.',
+      'warning',
+    )
+    return
+  }
+
+  if (pActual === pNueva) {
+    mostrarToast(
+      'La nueva contraseña no puede ser igual a la actual.',
+      'warning',
+    )
+    return
+  }
+
+  if (btnGuardar) {
+    btnGuardar.disabled = true
+    btnGuardar.textContent = 'Actualizando...'
+  }
+
+  mostrarLoading('Actualizando contraseña de forma segura...')
+
+  try {
+    const res = await llamarAppsScript(
+      {
+        accion: 'cambiar_contrasena',
+        usuario:
+          appState.supervisor.idSupervisor || appState.supervisor.usuario,
+        contrasenaActual: pActual,
+        nuevaContrasena: pNueva,
+      },
+      false,
+    )
+
+    ocultarLoading()
+    if (btnGuardar) {
+      btnGuardar.disabled = false
+      btnGuardar.textContent = 'Guardar Contraseña'
+    }
+
+    cerrarModalCambiarPassword()
+    mostrarToast(
+      res.message || '¡Contraseña actualizada y hasheada correctamente!',
+      'success',
+    )
+  } catch (err) {
+    ocultarLoading()
+    if (btnGuardar) {
+      btnGuardar.disabled = false
+      btnGuardar.textContent = 'Guardar Contraseña'
+    }
+    mostrarToast(err.message || 'Error al cambiar la contraseña.', 'error')
+  }
 }
