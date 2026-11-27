@@ -142,6 +142,69 @@
           <!-- Pestañas Superiores -->
           <nav class="tabs-navigation">
             <button
+              id="tab-btn-resumen"
+              class="tab-btn hidden"
+              onclick="cambiarTab('resumen')"
+              title="Resumen General y Supervisores"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+              >
+                <rect x="3" y="3" width="7" height="7"></rect>
+                <rect x="14" y="3" width="7" height="7"></rect>
+                <rect x="14" y="14" width="7" height="7"></rect>
+                <rect x="3" y="14" width="7" height="7"></rect>
+              </svg>
+              Resumen General
+            </button>
+            <button
+              id="tab-btn-calendario"
+              class="tab-btn hidden"
+              onclick="cambiarTab('calendario')"
+              title="Calendario Mensual de Asistencia"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+              >
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="16" y1="2" x2="16" y2="6"></line>
+                <line x1="8" y1="2" x2="8" y2="6"></line>
+                <line x1="3" y1="10" x2="21" y2="10"></line>
+              </svg>
+              Calendario
+            </button>
+            <button
+              id="tab-btn-calendario"
+              class="tab-btn hidden"
+              onclick="cambiarTab('calendario')"
+              title="Calendario Mensual de Asistencia"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+              >
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="16" y1="2" x2="16" y2="6"></line>
+                <line x1="8" y1="2" x2="8" y2="6"></line>
+                <line x1="3" y1="10" x2="21" y2="10"></line>
+              </svg>
+              Calendario
+            </button>
+            <button
               id="tab-btn-hoy"
               class="tab-btn active"
               onclick="cambiarTab('hoy')"
@@ -198,6 +261,9 @@
           <div class="user-pill">
             <div class="user-pill-avatar" id="avatar-inicial">S</div>
             <span class="user-pill-name" id="user-nombre">Supervisor</span>
+            <span id="badge-rol-admin" class="badge-role-admin hidden"
+              >ADMIN</span
+            >
           </div>
 
           <button
@@ -261,6 +327,73 @@
         </div>
       </header>
 
+      <!-- ========================================================
+         BARRA DE FILTROS PARA ADMINISTRADOR
+         ======================================================== -->
+      <div id="admin-filter-bar" class="admin-filter-bar hidden">
+        <div class="admin-filter-left">
+          <div class="admin-filter-group">
+            <label for="select-filtro-supervisor" class="admin-filter-label">
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+              >
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                <circle cx="9" cy="7" r="4"></circle>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+              </svg>
+              Supervisor:
+            </label>
+            <select
+              id="select-filtro-supervisor"
+              class="form-control form-control-sm select-admin-sup"
+              onchange="cambiarFiltroSupervisor(this.value)"
+            >
+              <option value="TODOS">Todos los Supervisores</option>
+            </select>
+          </div>
+
+          <div class="admin-filter-group admin-search-group">
+            <div class="search-input-box search-input-box-sm">
+              <svg
+                class="search-icon"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+              </svg>
+              <input
+                type="text"
+                id="input-busqueda-practicante"
+                class="form-control form-control-sm"
+                placeholder="Filtrar por nombre o practicante..."
+                autocomplete="off"
+                oninput="filtrarPracticantesEnPantalla(this.value)"
+              />
+              <button
+                type="button"
+                id="btn-limpiar-busqueda-p"
+                class="search-clear-btn"
+                style="display: none"
+                onclick="limpiarBusquedaPracticantes()"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Banner Feriado -->
       <div id="banner-feriado" class="holiday-banner hidden">
         <div>
@@ -278,6 +411,404 @@
 
       <!-- CONTENIDO PRINCIPAL -->
       <main class="main-content">
+        <!-- PESTAÑA 0: RESUMEN GENERAL (ADMINISTRADOR) -->
+        <section id="panel-resumen" class="hidden">
+          <div class="dashboard-header dashboard-header-with-actions">
+            <div>
+              <h2 class="section-title">
+                Resumen Ejecutivo y Gestión de Supervisores
+              </h2>
+              <p class="section-desc">
+                Métricas globales de asistencia, balance semanal y distribución
+                operativa por supervisor.
+              </p>
+            </div>
+            <button
+              class="btn btn-outline btn-sm"
+              onclick="recargarDatos()"
+              title="Refrescar métricas ejecutivas"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path
+                  d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"
+                />
+              </svg>
+              Sincronizar
+            </button>
+          </div>
+
+          <!-- Fila de KPIs Globales -->
+          <div class="kpi-row admin-kpi-row">
+            <div class="kpi-card">
+              <div
+                class="kpi-icon"
+                style="
+                  background: #f4ecf8;
+                  color: var(--brand-morado);
+                  border-color: #e9d5ff;
+                "
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="9" cy="7" r="4"></circle>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                </svg>
+              </div>
+              <div>
+                <div class="kpi-val" id="admin-kpi-total-practicantes">0</div>
+                <div class="kpi-label">Practicantes activos totales</div>
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div
+                class="kpi-icon"
+                style="
+                  background: #ecfdf5;
+                  color: #10b981;
+                  border-color: #a7f3d0;
+                "
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+              </div>
+              <div>
+                <div class="kpi-val" id="admin-kpi-presentes-hoy">0</div>
+                <div class="kpi-label">Presentes hoy en oficina</div>
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div
+                class="kpi-icon"
+                style="
+                  background: #eff6ff;
+                  color: #2563eb;
+                  border-color: #bfdbfe;
+                "
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+              </div>
+              <div>
+                <div class="kpi-val" id="admin-kpi-horas-globales">--h --m</div>
+                <div class="kpi-label">Horas trabajadas globales semana</div>
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div
+                class="kpi-icon"
+                style="
+                  background: #fffbeb;
+                  color: #d97706;
+                  border-color: #fde68a;
+                "
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+              </div>
+              <div>
+                <div class="kpi-val" id="admin-kpi-cumplimiento-global">0%</div>
+                <div class="kpi-label">Cumplimiento global de metas</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Cuadrícula de Supervisores -->
+          <div class="admin-section-container">
+            <div class="table-header-bar" style="margin-bottom: 16px">
+              <div class="table-header-left">
+                <div class="table-header-title">
+                  Supervisores y Equipos a Cargo
+                </div>
+                <div class="table-header-sub">
+                  Resumen de dotación, asistencia de hoy y avance semanal por
+                  cada supervisor
+                </div>
+              </div>
+            </div>
+            <div id="grid-supervisores-cards" class="grid-supervisores-cards">
+              <!-- Render dinámico de tarjetas de cada supervisor -->
+            </div>
+          </div>
+        </section>
+
+        <!-- PESTAÑA CALENDARIO MENSUAL (ADMINISTRADOR) -->
+        <section id="panel-calendario" class="hidden">
+          <div class="dashboard-header dashboard-header-with-actions">
+            <div>
+              <h2 class="section-title">Calendario Mensual de Asistencia</h2>
+              <p class="section-desc">
+                Monitoreo visual de asistencia, puntualidad, incidencias y horas
+                computadas por día.
+              </p>
+            </div>
+            <div
+              style="
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                flex-wrap: wrap;
+              "
+            >
+              <button
+                class="btn btn-outline btn-sm"
+                onclick="recargarDatos()"
+                title="Sincronizar datos con Google Sheets"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"
+                  />
+                </svg>
+                Sincronizar
+              </button>
+            </div>
+          </div>
+
+          <!-- Barra de Filtros Específicos del Calendario -->
+          <div class="cal-controls-toolbar">
+            <div class="cal-toolbar-left">
+              <!-- Filtro Sede -->
+              <div class="cal-filter-group">
+                <span class="cal-filter-label">Sede / Oficina:</span>
+                <select
+                  id="filtro-cal-sede"
+                  class="form-control form-control-sm cal-select-filter"
+                  onchange="aplicarFiltrosCalendario()"
+                >
+                  <option value="TODAS">Todas las Sedes</option>
+                </select>
+              </div>
+
+              <!-- Filtro Estado Asistencia -->
+              <div class="cal-filter-group">
+                <span class="cal-filter-label">Estado:</span>
+                <select
+                  id="filtro-cal-estado"
+                  class="form-control form-control-sm cal-select-filter"
+                  onchange="aplicarFiltrosCalendario()"
+                >
+                  <option value="TODOS">Todos los Estados</option>
+                </select>
+              </div>
+
+              <!-- Chips de Acceso Rápido (Tags dinámicos) -->
+              <div class="cal-chips-group" id="cal-chips-estado">
+                <!-- Se inyectan dinámicamente con sus etiquetas y conteos -->
+              </div>
+            </div>
+
+            <div class="cal-toolbar-right">
+              <button
+                id="btn-reset-cal-filtros"
+                class="btn-reset-filters"
+                onclick="restablecerFiltrosCalendario()"
+                title="Restablecer filtros a valores por defecto"
+                style="display: none"
+              >
+                ↺ Restablecer
+              </button>
+              <span id="cal-contador-general" class="cal-badge-count">
+                Calculando...
+              </span>
+            </div>
+          </div>
+
+          <!-- Contenedor Dividido: Calendario (Izq) + Lista Detallada (Der) -->
+          <div class="calendar-split-layout">
+            <!-- Columna Izquierda: Tarjeta del Calendario -->
+            <div class="calendar-card-container">
+              <!-- Cabecera de Navegación del Calendario -->
+              <div class="calendar-header-bar">
+                <div class="cal-nav-controls">
+                  <button
+                    id="cal-prev-month-btn"
+                    class="cal-nav-btn"
+                    onclick="cambiarMesCalendario(-1)"
+                    title="Mes anterior"
+                  >
+                    ‹
+                  </button>
+                  <div class="cal-current-title">
+                    <span id="cal-month-name" class="cal-month-text"
+                      >Noviembre</span
+                    >
+                    <span id="cal-year-text" class="cal-year-text">2026</span>
+                    <span id="cal-month-count-badge" class="cal-month-badge"
+                      >0 jornadas</span
+                    >
+                    <span
+                      id="cal-loading-spinner"
+                      class="dropdown-inline-spinner hidden"
+                      title="Cargando archivo histórico completo..."
+                    ></span>
+                  </div>
+                  <button
+                    id="cal-next-month-btn"
+                    class="cal-nav-btn"
+                    onclick="cambiarMesCalendario(1)"
+                    title="Mes siguiente"
+                  >
+                    ›
+                  </button>
+                </div>
+
+                <!-- Tira interactiva de 12 meses -->
+                <div class="cal-months-strip" id="cal-months-strip">
+                  <!-- Inyectado dinámicamente por script.js -->
+                </div>
+              </div>
+
+              <!-- Grilla de Días de la Semana y del Mes -->
+              <div class="calendar-grid-wrapper">
+                <div class="calendar-weekdays">
+                  <span>Lun</span>
+                  <span>Mar</span>
+                  <span>Mié</span>
+                  <span>Jue</span>
+                  <span>Vie</span>
+                  <span>Sáb</span>
+                  <span>Dom</span>
+                </div>
+                <div class="calendar-days-grid" id="calendar-days-grid">
+                  <!-- Días inyectados dinámicamente con badges, dots y cloud tooltip -->
+                </div>
+              </div>
+
+              <!-- Leyenda del Calendario -->
+              <div class="calendar-legend-bar">
+                <div class="cal-legend-item">
+                  <span class="legend-color-dot verde"></span>
+                  <span>A tiempo</span>
+                </div>
+                <div class="cal-legend-item">
+                  <span class="legend-color-dot naranja"></span>
+                  <span>Tolerancia / Tarde</span>
+                </div>
+                <div class="cal-legend-item">
+                  <span class="legend-color-dot rojo"></span>
+                  <span>Falta</span>
+                </div>
+                <div class="cal-legend-item">
+                  <span class="legend-color-dot morado"></span>
+                  <span>Permiso / Feriado</span>
+                </div>
+                <div class="cal-legend-item">
+                  <span class="legend-color-dot azul pulse"></span>
+                  <span>En curso</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Columna Derecha: Panel Lateral ("La tabla al costado") -->
+            <div class="calendar-side-panel">
+              <div class="side-panel-header">
+                <div class="side-panel-title-wrap">
+                  <h3 id="cal-side-title">📅 Asistencia del Día</h3>
+                  <div class="side-panel-sub" id="cal-side-subtitle">
+                    Selecciona un día del calendario para ver el detalle
+                  </div>
+                </div>
+                <span class="side-count-badge" id="cal-side-count">0</span>
+              </div>
+
+              <div class="side-table-toolbar">
+                <div
+                  class="search-input-box search-input-box-sm"
+                  style="width: 100%"
+                >
+                  <svg
+                    class="search-icon"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <input
+                    type="text"
+                    id="cal-side-search-input"
+                    class="form-control form-control-sm"
+                    placeholder="Buscar practicante en este día..."
+                    oninput="filtrarListaCostadoCalendario(this.value)"
+                  />
+                  <button
+                    type="button"
+                    id="cal-side-clear-search"
+                    class="search-clear-btn"
+                    style="display: none"
+                    onclick="limpiarBusquedaCostadoCalendario()"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <!-- Listado de tarjetas de practicantes en la fecha -->
+              <div
+                class="side-practicantes-list"
+                id="cal-side-practicantes-list"
+              >
+                <!-- Tarjetas inyectadas dinámicamente -->
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- PESTAÑA 1: ASISTENCIA DE HOY -->
         <section id="panel-hoy">
           <div class="dashboard-header">
@@ -383,6 +914,26 @@
                 title="Volver a la semana actual"
               >
                 Esta semana
+              </button>
+              <button
+                class="btn btn-outline btn-sm"
+                id="btn-exportar-csv"
+                onclick="exportarReporteSemanalCSV()"
+                title="Descargar reporte en formato CSV compatible con Excel"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                Exportar CSV
               </button>
             </div>
           </div>
@@ -525,6 +1076,7 @@
               <thead>
                 <tr>
                   <th>Practicante</th>
+                  <th id="th-col-supervisor" class="hidden">Supervisor</th>
                   <th>Horario</th>
                   <th id="th-dia-0" style="text-align: center">Lun</th>
                   <th id="th-dia-1" style="text-align: center">Mar</th>
@@ -715,6 +1267,230 @@
             </button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Modal Detalle Minimalista de Jornada de Practicante -->
+    <div id="modal-detalle-jornada" class="modal-backdrop hidden">
+      <div class="modal-window modal-window-minimal">
+        <div class="modal-header-with-close">
+          <div>
+            <h3
+              class="modal-title modal-title-minimal"
+              id="modal-jornada-nombre"
+            >
+              Detalle de Jornada
+            </h3>
+            <p class="modal-desc modal-desc-minimal" id="modal-jornada-subinfo">
+              Registro oficial de asistencia
+            </p>
+          </div>
+          <button
+            type="button"
+            class="modal-close-icon-btn"
+            onclick="cerrarModalDetalleJornada()"
+            title="Cerrar"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div
+          class="modal-body-content modal-body-minimal"
+          id="modal-jornada-body"
+        >
+          <!-- Bloques inyectados dinámicamente -->
+        </div>
+
+        <!-- Vista Edición / Corrección de Jornada (Oculta por defecto) -->
+        <div
+          class="modal-body-content modal-body-minimal hidden"
+          id="modal-jornada-edit-form"
+        >
+          <div class="edit-jornada-box">
+            <div class="edit-box-header">
+              <span class="edit-box-title"
+                >✏️ Modificar Marcaciones de Asistencia</span
+              >
+            </div>
+
+            <div class="edit-form-group">
+              <label class="edit-form-label" for="edit-jornada-fecha"
+                >Fecha del Registro:</label
+              >
+              <input
+                type="date"
+                id="edit-jornada-fecha"
+                class="form-control form-control-sm"
+              />
+            </div>
+
+            <div class="edit-form-grid-times">
+              <div class="edit-form-group">
+                <div class="edit-form-label-row">
+                  <label class="edit-form-label" for="edit-jornada-entrada"
+                    >Hora Entrada:</label
+                  >
+                  <button
+                    type="button"
+                    id="btn-set-oficial-entrada"
+                    class="btn-quick-hour"
+                    onclick="aplicarHoraOficialEntrada()"
+                    title="Poner hora oficial de entrada"
+                  >
+                    <svg
+                      width="10"
+                      height="10"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.2"
+                    >
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
+                    <span id="txt-oficial-entrada">Oficial</span>
+                  </button>
+                </div>
+                <input
+                  type="time"
+                  id="edit-jornada-entrada"
+                  class="form-control form-control-sm"
+                  step="60"
+                  oninput="actualizarCalculoHorasEnVivoEdicion()"
+                />
+              </div>
+
+              <div class="edit-form-group">
+                <div class="edit-form-label-row">
+                  <label class="edit-form-label" for="edit-jornada-salida"
+                    >Hora Salida:</label
+                  >
+                  <button
+                    type="button"
+                    id="btn-set-oficial-salida"
+                    class="btn-quick-hour"
+                    onclick="aplicarHoraOficialSalida()"
+                    title="Poner hora oficial de salida"
+                  >
+                    <svg
+                      width="10"
+                      height="10"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.2"
+                    >
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
+                    <span id="txt-oficial-salida">Oficial</span>
+                  </button>
+                </div>
+                <input
+                  type="time"
+                  id="edit-jornada-salida"
+                  class="form-control form-control-sm"
+                  step="60"
+                  oninput="actualizarCalculoHorasEnVivoEdicion()"
+                />
+              </div>
+            </div>
+
+            <!-- Banner dinámico de cálculo en vivo -->
+            <div id="edit-jornada-preview-box" class="edit-preview-banner">
+              <div class="edit-preview-calc">
+                <span class="edit-preview-lbl">NUEVA DURACIÓN CALCULADA:</span>
+                <span class="edit-preview-val" id="edit-preview-horas"
+                  >--:--</span
+                >
+              </div>
+              <div id="edit-preview-status">
+                <span class="cell-pill cell-pending">Horas</span>
+              </div>
+            </div>
+
+            <div class="edit-form-group">
+              <label class="edit-form-label" for="edit-jornada-motivo">
+                Motivo / Justificación del cambio
+                <span style="color: #dc2626">*</span>:
+              </label>
+              <input
+                type="text"
+                id="edit-jornada-motivo"
+                class="form-control form-control-sm"
+                placeholder="Ej: Olvido de registro, ajuste por reunión, corrección de horario..."
+                required
+              />
+            </div>
+          </div>
+        </div>
+
+        <div
+          class="modal-actions modal-actions-minimal"
+          id="modal-jornada-actions-detalle"
+          style="display: flex; justify-content: space-between; width: 100%"
+        >
+          <button
+            type="button"
+            class="btn btn-edit-jornada btn-sm"
+            id="btn-abrir-edicion-jornada"
+            onclick="activarModoEdicionJornada()"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              style="margin-right: 2px; vertical-align: middle"
+            >
+              <path
+                d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"
+              ></path>
+              <path
+                d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"
+              ></path>
+            </svg>
+            Editar Jornada
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary btn-sm"
+            onclick="cerrarModalDetalleJornada()"
+          >
+            Cerrar
+          </button>
+        </div>
+
+        <div
+          class="modal-actions modal-actions-minimal hidden"
+          id="modal-jornada-actions-edicion"
+          style="
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            width: 100%;
+          "
+        >
+          <button
+            type="button"
+            class="btn btn-outline btn-sm"
+            id="btn-cancelar-edicion"
+            onclick="cancelarModoEdicionJornada()"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary btn-sm"
+            id="btn-guardar-edicion"
+            onclick="guardarEdicionJornada()"
+          >
+            💾 Guardar Cambios
+          </button>
+        </div>
       </div>
     </div>
 

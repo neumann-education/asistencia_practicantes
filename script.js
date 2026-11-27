@@ -8,10 +8,15 @@ const STORAGE_KEY_USER = 'IBEROTECA_TOTH_USER_SESSION'
 const STORAGE_KEY_SUPERVISORES = 'IBEROTECA_SUPERVISORES_CACHE'
 
 let appState = {
-  tabActual: 'hoy',
+  tabActual: 'hoy', // 'resumen' | 'hoy' | 'reporte' | 'auditoria'
   supervisoresDisponibles: [],
   supervisor: null,
+  esAdmin: false,
+  filtroSupervisor: 'TODOS',
+  filtroTextoPracticante: '',
   practicantes: [],
+  registrosAuditoria: [],
+  auditoriaCargada: false,
   feriado: { esFeriado: false, motivo: '' },
   forzarFeriado: false,
   pendienteAnular: null,
@@ -22,7 +27,16 @@ let appState = {
   cacheReporteSemanal: {},
   precargaEnCurso: false,
   historicoCompletoCargado: false,
+  historicoCompletoCargando: false,
   vistaReporte: 'puntualidad', // 'puntualidad' | 'horarios'
+  calendar: {
+    currentYear: new Date().getFullYear(),
+    currentMonth: new Date().getMonth(),
+    selectedDateStr: null,
+    filtroSede: 'TODAS',
+    filtroEstado: 'TODOS',
+    sideFilterSearch: '',
+  },
 }
 
 // ==========================================================
@@ -74,9 +88,18 @@ window.addEventListener('DOMContentLoaded', () => {
   if (sesionGuardada) {
     try {
       appState.supervisor = JSON.parse(sesionGuardada)
+      appState.esAdmin = !!(
+        appState.supervisor.esAdmin ||
+        (appState.supervisor.rol &&
+          String(appState.supervisor.rol).toLowerCase().includes('admin'))
+      )
+      if (appState.esAdmin) {
+        appState.tabActual = 'resumen'
+      }
       mostrarSplashScreen('Cargando panel de asistencia...')
       mostrarDashboard()
       recargarDatos().finally(() => {
+        cambiarTab(appState.tabActual)
         ocultarSplashScreen(350)
       })
     } catch (e) {
@@ -142,23 +165,52 @@ function iniciarReloj() {
 function cambiarTab(nombreTab) {
   appState.tabActual = nombreTab
 
+  const btnResumen = document.getElementById('tab-btn-resumen')
+  const btnCalendario = document.getElementById('tab-btn-calendario')
   const btnHoy = document.getElementById('tab-btn-hoy')
   const btnReporte = document.getElementById('tab-btn-reporte')
+
+  const panelResumen = document.getElementById('panel-resumen')
+  const panelCalendario = document.getElementById('panel-calendario')
   const panelHoy = document.getElementById('panel-hoy')
   const panelReporte = document.getElementById('panel-reporte')
+  const filterBar = document.getElementById('admin-filter-bar')
 
-  if (nombreTab === 'hoy') {
-    btnHoy.classList.add('active')
-    btnReporte.classList.remove('active')
-    panelHoy.classList.remove('hidden')
-    panelReporte.classList.add('hidden')
-    renderizarPanelHoy()
-  } else {
-    btnReporte.classList.add('active')
-    btnHoy.classList.remove('active')
-    panelReporte.classList.remove('hidden')
-    panelHoy.classList.add('hidden')
+  // Desactivar todos los botones de tabs
+  ;[btnResumen, btnCalendario, btnHoy, btnReporte].forEach((b) => {
+    if (b) b.classList.remove('active')
+  })
+  // Ocultar todos los paneles
+  ;[panelResumen, panelCalendario, panelHoy, panelReporte].forEach((p) => {
+    if (p) p.classList.add('hidden')
+  })
+
+  // Alternativa 1: Ocultar barra de filtros en "Resumen General", mostrar en las demás si es admin
+  if (filterBar) {
+    if (appState.esAdmin && nombreTab !== 'resumen') {
+      filterBar.classList.remove('hidden')
+    } else {
+      filterBar.classList.add('hidden')
+    }
+  }
+
+  if (nombreTab === 'resumen' && appState.esAdmin) {
+    if (btnResumen) btnResumen.classList.add('active')
+    if (panelResumen) panelResumen.classList.remove('hidden')
+    renderizarPanelResumen()
+  } else if (nombreTab === 'calendario' && appState.esAdmin) {
+    if (btnCalendario) btnCalendario.classList.add('active')
+    if (panelCalendario) panelCalendario.classList.remove('hidden')
+    renderizarPanelCalendario()
+  } else if (nombreTab === 'reporte') {
+    if (btnReporte) btnReporte.classList.add('active')
+    if (panelReporte) panelReporte.classList.remove('hidden')
     renderizarPanelReporte()
+  } else {
+    // Default: 'hoy'
+    if (btnHoy) btnHoy.classList.add('active')
+    if (panelHoy) panelHoy.classList.remove('hidden')
+    renderizarPanelHoy()
   }
 }
 
@@ -431,7 +483,7 @@ async function iniciarSesion(e) {
   const usuario = document.getElementById('login-usuario').value.trim()
   const contrasena = document.getElementById('login-password').value.trim()
 
-  mostrarSplashScreen('Autenticando supervisor y cargando registros...')
+  mostrarSplashScreen('Autenticando usuario y cargando registros...')
 
   try {
     const res = await llamarAppsScript(
@@ -439,6 +491,22 @@ async function iniciarSesion(e) {
       true,
     )
     appState.supervisor = res.supervisor
+    appState.esAdmin = !!(
+      res.esAdmin ||
+      (res.supervisor &&
+        String(res.supervisor.rol || '')
+          .toLowerCase()
+          .includes('admin'))
+    )
+
+    if (res.supervisores && Array.isArray(res.supervisores)) {
+      appState.supervisoresDisponibles = res.supervisores
+      localStorage.setItem(
+        STORAGE_KEY_SUPERVISORES,
+        JSON.stringify(res.supervisores),
+      )
+    }
+
     appState.practicantes = res.practicantes || []
     appState.feriado = res.feriado || { esFeriado: false }
     if (res.semanasDisponibles && res.semanasDisponibles.length > 0) {
@@ -454,13 +522,22 @@ async function iniciarSesion(e) {
     appState.cacheReporteSemanal[semActual.lunes] = res.practicantes || []
     appState.practicantesReporteSemana = null
     appState.historicoCompletoCargado = false
+    appState.filtroSupervisor = 'TODOS'
+    appState.filtroTextoPracticante = ''
+    appState.registrosAuditoria = []
+    appState.auditoriaCargada = false
+    appState.tabActual = appState.esAdmin ? 'resumen' : 'hoy'
 
     localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(res.supervisor))
 
-    mostrarToast(`¡Bienvenido/a, ${res.supervisor.usuario}!`, 'success')
+    const saludoRol = appState.esAdmin ? 'Administrador/a' : 'Supervisor/a'
+    mostrarToast(
+      `¡Bienvenido/a (${saludoRol}), ${res.supervisor.usuario}!`,
+      'success',
+    )
     mostrarDashboard()
     poblarSelectorSemanas()
-    renderizarTodo()
+    cambiarTab(appState.tabActual)
 
     ocultarSplashScreen(350)
 
@@ -475,7 +552,12 @@ async function iniciarSesion(e) {
 function cerrarSesion() {
   mostrarSplashScreen('Cerrando sesión...')
   appState.supervisor = null
+  appState.esAdmin = false
+  appState.filtroSupervisor = 'TODOS'
+  appState.filtroTextoPracticante = ''
   appState.practicantes = []
+  appState.registrosAuditoria = []
+  appState.auditoriaCargada = false
   appState.semanasDisponibles = []
   appState.semanaSeleccionadaLunes = null
   appState.practicantesReporteSemana = null
@@ -483,6 +565,7 @@ function cerrarSesion() {
   appState.precargaEnCurso = false
   appState.historicoCompletoCargado = false
   localStorage.removeItem(STORAGE_KEY_USER)
+  configurarInterfazSegunRol()
   mostrarLogin()
   setTimeout(() => {
     ocultarSplashScreen(300)
@@ -498,11 +581,27 @@ async function recargarDatos() {
     appState.historicoCompletoCargado = false
 
     const res = await llamarAppsScript(
-      { accion: 'recargar', usuario: appState.supervisor.usuario },
+      {
+        accion: 'recargar',
+        usuario: appState.supervisor.usuario,
+        filtroSupervisor: appState.esAdmin ? appState.filtroSupervisor : '',
+      },
       true,
     )
     appState.practicantes = res.practicantes || []
     appState.feriado = res.feriado || { esFeriado: false }
+    if (res.supervisor) {
+      appState.supervisor = res.supervisor
+      localStorage.setItem(STORAGE_KEY_SESION, JSON.stringify(res.supervisor))
+    }
+    if (res.supervisores && Array.isArray(res.supervisores)) {
+      appState.supervisoresDisponibles = res.supervisores
+      localStorage.setItem(
+        STORAGE_KEY_SUPERVISORES,
+        JSON.stringify(res.supervisores),
+      )
+    }
+    actualizarUsuarioTopbar()
     if (res.semanasDisponibles && res.semanasDisponibles.length > 0) {
       appState.semanasDisponibles = res.semanasDisponibles
     }
@@ -512,14 +611,65 @@ async function recargarDatos() {
     if (semActual) {
       appState.cacheReporteSemanal[semActual.lunes] = res.practicantes || []
     }
+    configurarInterfazSegunRol()
     poblarSelectorSemanas()
-    renderizarTodo()
+    cambiarTab(appState.tabActual || (appState.esAdmin ? 'resumen' : 'hoy'))
     mostrarToast('Datos actualizados.', 'success')
 
     // Disparar precarga silenciosa de las últimas 12 semanas
     iniciarPrecargaSemanasRecientes()
   } catch (err) {
     mostrarToast(err.message || 'Error al sincronizar con Sheets', 'error')
+  }
+}
+
+/**
+ * Obtiene el Nombre real del supervisor o administrador actual
+ */
+function obtenerNombreSupervisorActual() {
+  if (!appState.supervisor) return 'Supervisor'
+  if (appState.supervisor.nombre && appState.supervisor.nombre.trim()) {
+    return appState.supervisor.nombre.trim()
+  }
+  if (
+    Array.isArray(appState.supervisoresDisponibles) &&
+    appState.supervisoresDisponibles.length > 0
+  ) {
+    const sId = (appState.supervisor.idSupervisor || '').toLowerCase()
+    const sUser = (appState.supervisor.usuario || '').toLowerCase()
+    const match = appState.supervisoresDisponibles.find(
+      (s) =>
+        (s.idSupervisor && String(s.idSupervisor).toLowerCase() === sId) ||
+        (s.usuario && String(s.usuario).toLowerCase() === sUser),
+    )
+    if (match && match.nombre && match.nombre.trim()) {
+      appState.supervisor.nombre = match.nombre.trim()
+      return match.nombre.trim()
+    }
+  }
+  return appState.supervisor.usuario || 'Supervisor'
+}
+
+/**
+ * Actualiza la información del usuario en la barra superior (Avatar, Nombre y Oficina)
+ */
+function actualizarUsuarioTopbar() {
+  if (!appState.supervisor) return
+  const nombreAMostrar = obtenerNombreSupervisorActual()
+  const elNombre = document.getElementById('user-nombre')
+  const elAvatar = document.getElementById('avatar-inicial')
+  const elOficina = document.getElementById('label-oficina')
+
+  if (elNombre) {
+    elNombre.textContent = nombreAMostrar
+    elNombre.title = `Usuario: ${appState.supervisor.usuario || ''} | Rol: ${appState.supervisor.rol || ''}`
+  }
+  if (elAvatar) {
+    elAvatar.textContent = nombreAMostrar.charAt(0).toUpperCase()
+  }
+  if (elOficina) {
+    elOficina.textContent =
+      appState.supervisor.oficina || 'Innovación y Desarrollo'
   }
 }
 
@@ -536,13 +686,10 @@ function mostrarDashboard() {
   document.getElementById('vista-dashboard').classList.remove('hidden')
 
   if (appState.supervisor) {
-    document.getElementById('user-nombre').textContent =
-      appState.supervisor.usuario
-    document.getElementById('label-oficina').textContent =
-      appState.supervisor.oficina
-    document.getElementById('avatar-inicial').textContent =
-      appState.supervisor.usuario.charAt(0).toUpperCase()
+    actualizarUsuarioTopbar()
   }
+
+  configurarInterfazSegunRol()
 
   const bannerFeriado = document.getElementById('banner-feriado')
   if (appState.feriado && appState.feriado.esFeriado) {
@@ -552,6 +699,149 @@ function mostrarDashboard() {
   } else {
     bannerFeriado.classList.add('hidden')
   }
+}
+
+function configurarInterfazSegunRol() {
+  const esAdmin = !!appState.esAdmin
+
+  const tabResumen = document.getElementById('tab-btn-resumen')
+  const tabCalendario = document.getElementById('tab-btn-calendario')
+  const badgeAdmin = document.getElementById('badge-rol-admin')
+  const filterBar = document.getElementById('admin-filter-bar')
+  const thSupervisor = document.getElementById('th-col-supervisor')
+
+  if (esAdmin) {
+    if (tabResumen) tabResumen.classList.remove('hidden')
+    if (tabCalendario) tabCalendario.classList.remove('hidden')
+    if (badgeAdmin) badgeAdmin.classList.remove('hidden')
+    if (filterBar) {
+      if (appState.tabActual !== 'resumen') {
+        filterBar.classList.remove('hidden')
+      } else {
+        filterBar.classList.add('hidden')
+      }
+    }
+    if (thSupervisor) thSupervisor.classList.remove('hidden')
+    poblarSelectorFiltroSupervisores()
+  } else {
+    if (tabResumen) tabResumen.classList.add('hidden')
+    if (tabCalendario) tabCalendario.classList.add('hidden')
+    if (badgeAdmin) badgeAdmin.classList.add('hidden')
+    if (filterBar) filterBar.classList.add('hidden')
+    if (thSupervisor) thSupervisor.classList.add('hidden')
+  }
+}
+
+function poblarSelectorFiltroSupervisores() {
+  const select = document.getElementById('select-filtro-supervisor')
+  if (!select) return
+
+  const valorPrevio = appState.filtroSupervisor || 'TODOS'
+  select.innerHTML = '<option value="TODOS">Todos los Supervisores</option>'
+
+  const supervisores = appState.supervisoresDisponibles || []
+  supervisores.forEach((s) => {
+    const opt = document.createElement('option')
+    opt.value = s.idSupervisor || s.usuario
+    opt.textContent = `${s.nombre || s.usuario} (${s.oficina || 'General'})`
+    select.appendChild(opt)
+  })
+
+  select.value = valorPrevio
+}
+
+function cambiarFiltroSupervisor(nuevoFiltro) {
+  appState.filtroSupervisor = nuevoFiltro || 'TODOS'
+  const select = document.getElementById('select-filtro-supervisor')
+  if (select && select.value !== appState.filtroSupervisor) {
+    select.value = appState.filtroSupervisor
+  }
+
+  if (appState.filtroSupervisor === 'TODOS') {
+    mostrarToast('Mostrando todos los supervisores', 'info')
+  } else {
+    const supObj = (appState.supervisoresDisponibles || []).find(
+      (s) =>
+        s.idSupervisor === appState.filtroSupervisor ||
+        s.usuario === appState.filtroSupervisor,
+    )
+    const nombre = supObj ? supObj.nombre : appState.filtroSupervisor
+    mostrarToast(`Filtrando equipo de ${nombre}`, 'info')
+  }
+
+  renderizarTodo()
+}
+
+function filtrarPracticantesEnPantalla(texto) {
+  appState.filtroTextoPracticante = (texto || '').trim().toLowerCase()
+  const btnClear = document.getElementById('btn-limpiar-busqueda-p')
+  if (btnClear) {
+    btnClear.style.display = appState.filtroTextoPracticante ? 'block' : 'none'
+  }
+  renderizarTodo()
+}
+
+function limpiarBusquedaPracticantes() {
+  const input = document.getElementById('input-busqueda-practicante')
+  if (input) input.value = ''
+  filtrarPracticantesEnPantalla('')
+}
+
+function actualizarContadorPracticantes(visibles, totales) {
+  const el = document.getElementById('admin-contador-practicantes')
+  if (!el || !appState.esAdmin) return
+
+  if (visibles === totales) {
+    el.textContent = `${totales} practicantes`
+  } else {
+    el.textContent = `Mostrando ${visibles} de ${totales}`
+  }
+}
+
+function obtenerPracticantesFiltradosPorSupervisorYTexto(lista) {
+  if (!lista || !Array.isArray(lista)) return []
+
+  const filtroSup = (appState.filtroSupervisor || 'TODOS').trim().toLowerCase()
+  const filtroTxt = (appState.filtroTextoPracticante || '').trim().toLowerCase()
+
+  return lista.filter((p) => {
+    // 1. Filtro por supervisor (si es admin y no es TODOS)
+    if (appState.esAdmin && filtroSup !== 'todos') {
+      const pSupId = String(p.supervisor || '')
+        .trim()
+        .toLowerCase()
+      const pSupNom = String(p.supervisorNombre || '')
+        .trim()
+        .toLowerCase()
+      const pSupAsig = String(p.supervisorAsignado || '')
+        .trim()
+        .toLowerCase()
+      const coincideSup =
+        pSupId === filtroSup ||
+        pSupNom === filtroSup ||
+        pSupAsig === filtroSup ||
+        (p.supervisor && String(p.supervisor).toLowerCase().includes(filtroSup))
+      if (!coincideSup) return false
+    }
+
+    // 2. Filtro por texto de búsqueda
+    if (filtroTxt) {
+      const nom = String(p.nombre || '').toLowerCase()
+      const usr = String(p.usuario || '').toLowerCase()
+      const id = String(p.idPracticante || '').toLowerCase()
+      const sup = String(p.supervisorNombre || p.supervisor || '').toLowerCase()
+      const ofi = String(p.oficina || '').toLowerCase()
+      const coincideTxt =
+        nom.includes(filtroTxt) ||
+        usr.includes(filtroTxt) ||
+        id.includes(filtroTxt) ||
+        sup.includes(filtroTxt) ||
+        ofi.includes(filtroTxt)
+      if (!coincideTxt) return false
+    }
+
+    return true
+  })
 }
 
 function toggleForzarFeriado() {
@@ -856,10 +1146,16 @@ function actualizarDesgloseSemanalEnMemoria(
 }
 
 function renderizarTodo() {
-  if (appState.tabActual === 'hoy') {
+  if (appState.tabActual === 'resumen' && appState.esAdmin) {
+    renderizarPanelResumen()
+  } else if (appState.tabActual === 'calendario' && appState.esAdmin) {
+    renderizarPanelCalendario()
+  } else if (appState.tabActual === 'hoy') {
     renderizarPanelHoy()
-  } else {
+  } else if (appState.tabActual === 'reporte') {
     renderizarPanelReporte()
+  } else {
+    renderizarPanelHoy()
   }
 }
 
@@ -874,9 +1170,15 @@ function formatearHoraSinSegundos(horaStr) {
 
 function renderizarPanelHoy() {
   const contenedor = document.getElementById('grid-practicantes')
+  if (!contenedor) return
   contenedor.innerHTML = ''
 
-  if (!appState.practicantes || appState.practicantes.length === 0) {
+  const listaBase = appState.practicantes || []
+  const listaFiltrada =
+    obtenerPracticantesFiltradosPorSupervisorYTexto(listaBase)
+  actualizarContadorPracticantes(listaFiltrada.length, listaBase.length)
+
+  if (listaBase.length === 0) {
     contenedor.innerHTML = `
           <div style="grid-column: 1 / -1; text-align: center; padding: 48px 20px; background: white; border-radius: var(--radius-lg); border: 1px dashed var(--slate-300);">
             <h3 style="color: var(--slate-700); margin-bottom: 4px;">No hay practicantes asignados</h3>
@@ -886,14 +1188,46 @@ function renderizarPanelHoy() {
     return
   }
 
+  if (listaFiltrada.length === 0) {
+    contenedor.innerHTML = `
+          <div style="grid-column: 1 / -1; text-align: center; padding: 48px 20px; background: white; border-radius: var(--radius-lg); border: 1px dashed var(--slate-300);">
+            <h3 style="color: var(--slate-700); margin-bottom: 4px;">No se encontraron practicantes</h3>
+            <p style="color: var(--slate-500); font-size: 0.85rem;">Ningún practicante coincide con los filtros de búsqueda o supervisor seleccionados.</p>
+          </div>
+        `
+    return
+  }
+
   const esFeriadoBloqueante =
     appState.feriado && appState.feriado.esFeriado && !appState.forzarFeriado
 
-  appState.practicantes.forEach((p, idx) => {
+  listaFiltrada.forEach((p) => {
+    const idxEncontrado = appState.practicantes.findIndex(
+      (item) =>
+        (item.idPracticante && item.idPracticante === p.idPracticante) ||
+        item.usuario === p.usuario ||
+        item.nombre === p.nombre,
+    )
+    const idx = idxEncontrado >= 0 ? idxEncontrado : 0
+
     const tieneEntrada = !!p.entrada
     const tieneSalida = !!p.salida
     const tieneIncidencia = !!p.incidencia
     const metaDiariaMin = p.metaDiariaMinutos || 240
+
+    // Badge de Supervisor si es Administrador
+    let supBadgeHtml = ''
+    if (appState.esAdmin) {
+      supBadgeHtml = `
+        <div class="card-supervisor-badge" title="Supervisor asignado: ${p.supervisorNombre || p.supervisor || 'General'}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+          </svg>
+          <span>Sup: ${p.supervisorNombre || p.supervisor || 'General'}</span>
+        </div>
+      `
+    }
 
     // TAGS LIMPIOS CON BORDE (SIN LA HORA ESTÁTICA DENTRO DEL TAG)
     let badgeHtml = `
@@ -1045,6 +1379,13 @@ function renderizarPanelHoy() {
     let footerHtml = ''
     if (tieneSalida) {
       footerHtml = `
+            <button class="btn-footer-action secondary" onclick="abrirEdicionJornadaHoy('${p.idPracticante || p.usuario}')" title="Corregir horario de hoy">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+              </svg>
+              <span>Corregir horario</span>
+            </button>
             <button class="btn-footer-action danger" onclick="solicitarAnulacion('${p.idPracticante || p.usuario}', '${p.salida.idRegistro || ''}', 'Salida de las ${p.salida.hora}', ${idx}, 'SALIDA', '${p.nombre || p.usuario}')" title="Revertir la salida de hoy">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
                 <polyline points="1 4 1 10 7 10"></polyline>
@@ -1055,6 +1396,13 @@ function renderizarPanelHoy() {
           `
     } else if (tieneEntrada) {
       footerHtml = `
+            <button class="btn-footer-action secondary" onclick="abrirEdicionJornadaHoy('${p.idPracticante || p.usuario}')" title="Corregir horario de entrada">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+              </svg>
+              <span>Corregir entrada</span>
+            </button>
             <button class="btn-footer-action danger" onclick="solicitarAnulacion('${p.idPracticante || p.usuario}', '${p.entrada.idRegistro || ''}', 'Entrada de las ${p.entrada.hora}', ${idx}, 'ENTRADA', '${p.nombre || p.usuario}')" title="Revertir la entrada de hoy">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
                 <polyline points="1 4 1 10 7 10"></polyline>
@@ -1065,6 +1413,13 @@ function renderizarPanelHoy() {
           `
     } else if (tieneIncidencia) {
       footerHtml = `
+            <button class="btn-footer-action secondary" onclick="abrirEdicionJornadaHoy('${p.idPracticante || p.usuario}')" title="Asentar o corregir horario real">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+              </svg>
+              <span>Asentar horario</span>
+            </button>
             <button class="btn-footer-action danger" onclick="solicitarAnulacion('${p.idPracticante || p.usuario}', '${p.incidencia.idRegistro || ''}', 'Inasistencia', ${idx}, 'INCIDENCIA', '${p.nombre || p.usuario}')" title="Eliminar registro de inasistencia">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -1094,6 +1449,7 @@ function renderizarPanelHoy() {
                 <h3 class="card-name" title="${p.nombre || p.usuario}">${p.nombre || p.usuario}</h3>
                 ${badgeHtml}
               </div>
+              ${supBadgeHtml}
               <div class="card-meta">
                 <span class="card-meta-horario">
                   Horario: <strong>${formatearHoraSinSegundos(p.horaEntradaOficial)} - ${formatearHoraSinSegundos(p.horaSalidaOficial)}</strong>
@@ -1366,6 +1722,7 @@ async function seleccionarSemana(fechaLunes) {
       {
         accion: 'obtener_reporte_historico_completo',
         usuario: appState.supervisor.usuario,
+        filtroSupervisor: appState.esAdmin ? appState.filtroSupervisor : '',
         excluirFechasLunes: Object.keys(appState.cacheReporteSemanal),
       },
       false,
@@ -1430,6 +1787,7 @@ async function iniciarPrecargaSemanasRecientes() {
       {
         accion: 'obtener_reporte_lote_semanas',
         usuario: appState.supervisor.usuario,
+        filtroSupervisor: appState.esAdmin ? appState.filtroSupervisor : '',
         fechasLunes: fechasLunesAPedir,
       },
       false,
@@ -1547,6 +1905,16 @@ function renderizarPanelReporte() {
 
   poblarSelectorSemanas()
 
+  // Sincronizar columna supervisor en tabla
+  const thSupervisor = document.getElementById('th-col-supervisor')
+  if (thSupervisor) {
+    if (appState.esAdmin) {
+      thSupervisor.classList.remove('hidden')
+    } else {
+      thSupervisor.classList.add('hidden')
+    }
+  }
+
   // Sincronizar estado visual de los botones del control segmentado
   const btnPunt = document.getElementById('btn-vista-puntualidad')
   const btnHorarios = document.getElementById('btn-vista-horarios')
@@ -1562,16 +1930,36 @@ function renderizarPanelReporte() {
 
   const esVistaHorarios = appState.vistaReporte === 'horarios'
 
-  const listaPracticantes =
-    appState.practicantesReporteSemana || appState.practicantes
-  if (!listaPracticantes || listaPracticantes.length === 0) return
+  const listaPracticantesBase =
+    appState.practicantesReporteSemana || appState.practicantes || []
+  const listaPracticantes = obtenerPracticantesFiltradosPorSupervisorYTexto(
+    listaPracticantesBase,
+  )
+  actualizarContadorPracticantes(
+    listaPracticantes.length,
+    listaPracticantesBase.length,
+  )
+
+  if (!listaPracticantes || listaPracticantes.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="${appState.esAdmin ? 11 : 10}" style="text-align: center; padding: 36px; color: var(--slate-400);">
+          No se encontraron practicantes para la semana y filtros seleccionados.
+        </td>
+      </tr>
+    `
+    return
+  }
 
   // Actualizar los encabezados de los días con sus fechas
+  const thDiaIds = ['th-lun', 'th-mar', 'th-mie', 'th-jue', 'th-vie']
   const primerDesglose = listaPracticantes[0]?.desgloseSemanal
   if (primerDesglose && primerDesglose.length === 5) {
     const nombresDiasBase = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie']
     primerDesglose.forEach((dia, i) => {
-      const thEl = document.getElementById(`th-dia-${i}`)
+      const thEl =
+        document.getElementById(thDiaIds[i]) ||
+        document.getElementById(`th-dia-${i}`)
       if (thEl) {
         let diaNum = ''
         if (dia.fecha) {
@@ -1813,9 +2201,14 @@ function renderizarPanelReporte() {
       saldoHtml = `<span class="cell-balance-zero">Al día</span>`
     }
 
+    const celdaSupervisorHtml = appState.esAdmin
+      ? `<td><span class="card-supervisor-badge" style="font-size: 0.75rem;">${p.supervisorNombre || p.supervisorAsignado || p.supervisor || 'General'}</span></td>`
+      : ''
+
     const tr = document.createElement('tr')
     tr.innerHTML = `
           <td><strong>${p.nombre || p.usuario}</strong></td>
+          ${celdaSupervisorHtml}
           <td style="color: var(--slate-500);">${formatearHoraSinSegundos(p.horaEntradaOficial)} - ${formatearHoraSinSegundos(p.horaSalidaOficial)}</td>
           ${celdasDiasHtml}
           <td><strong>${formatearMinutos(totalSemanaMin)}</strong></td>
@@ -1835,6 +2228,2593 @@ function renderizarPanelReporte() {
       ? Math.round((sumaMinutosEquipo / sumaMetasEquipo) * 100)
       : 0
   document.getElementById('kpi-cumplimiento-pct').textContent = `${pctGlobal}%`
+}
+
+// ==========================================================
+// RENDERIZADO: PANEL 0 - RESUMEN GENERAL (ADMINISTRADOR)
+// ==========================================================
+function renderizarPanelResumen() {
+  if (!appState.esAdmin) return
+
+  const practicantesHoy = appState.practicantes || []
+  const practicantesSemana =
+    appState.practicantesReporteSemana &&
+    appState.practicantesReporteSemana.length > 0
+      ? appState.practicantesReporteSemana
+      : practicantesHoy
+
+  // 1. KPI Practicantes Activos Totales
+  const elTotal = document.getElementById('admin-kpi-total-practicantes')
+  if (elTotal) elTotal.textContent = practicantesHoy.length
+
+  // 2. KPI Presentes Hoy en Oficina (con entrada registrada y sin salida)
+  const presentesHoy = practicantesHoy.filter(
+    (p) => p.entrada && !p.salida,
+  ).length
+  const elPresentes = document.getElementById('admin-kpi-presentes-hoy')
+  if (elPresentes) elPresentes.textContent = presentesHoy
+
+  // 3. KPI Horas Trabajadas Globales en la Semana
+  let sumaMinutosGlobal = 0
+  let sumaMetasGlobal = 0
+  practicantesSemana.forEach((p) => {
+    sumaMinutosGlobal += p.minutosSemanaTotal || 0
+    sumaMetasGlobal += p.metaSemanalMinutos || 1200
+  })
+
+  const elHorasGlobal = document.getElementById('admin-kpi-horas-globales')
+  if (elHorasGlobal) {
+    elHorasGlobal.textContent = formatearMinutos(sumaMinutosGlobal)
+  }
+
+  // 4. KPI Cumplimiento Global de Metas
+  const pctGlobal =
+    sumaMetasGlobal > 0
+      ? Math.round((sumaMinutosGlobal / sumaMetasGlobal) * 100)
+      : 0
+  const elPctGlobal = document.getElementById('admin-kpi-cumplimiento-global')
+  if (elPctGlobal) {
+    elPctGlobal.textContent = `${pctGlobal}%`
+  }
+
+  // 5. Cuadrícula de Tarjetas por Supervisor
+  renderizarTarjetasSupervisores(practicantesHoy, practicantesSemana)
+}
+
+function renderizarTarjetasSupervisores(practicantesHoy, practicantesSemana) {
+  const gridContainer = document.getElementById('grid-supervisores-cards')
+  if (!gridContainer) return
+
+  gridContainer.innerHTML = ''
+  const supervisores = appState.supervisoresDisponibles || []
+
+  if (supervisores.length === 0) {
+    gridContainer.innerHTML = `
+      <div style="grid-column: 1 / -1; text-align: center; padding: 36px; background: white; border-radius: var(--radius-lg); border: 1px dashed var(--slate-300); color: var(--slate-400);">
+        No hay supervisores disponibles en la lista sincronizada.
+      </div>
+    `
+    return
+  }
+
+  supervisores.forEach((sup) => {
+    const sId = String(sup.idSupervisor || sup.usuario || '')
+      .trim()
+      .toLowerCase()
+    const sNom = String(sup.nombre || sup.usuario || '')
+      .trim()
+      .toLowerCase()
+
+    // Practicantes a cargo de este supervisor en la jornada de hoy
+    const misPracticantesHoy = practicantesHoy.filter((p) => {
+      const pSup = String(p.supervisor || '')
+        .trim()
+        .toLowerCase()
+      const pNom = String(p.supervisorNombre || '')
+        .trim()
+        .toLowerCase()
+      const pAsig = String(p.supervisorAsignado || '')
+        .trim()
+        .toLowerCase()
+      return (
+        pSup === sId ||
+        pNom === sNom ||
+        pAsig === sId ||
+        pAsig === sNom ||
+        pSup === sNom
+      )
+    })
+
+    // Practicantes a cargo de este supervisor en el balance semanal
+    const misPracticantesSemana = practicantesSemana.filter((p) => {
+      const pSup = String(p.supervisor || '')
+        .trim()
+        .toLowerCase()
+      const pNom = String(p.supervisorNombre || '')
+        .trim()
+        .toLowerCase()
+      const pAsig = String(p.supervisorAsignado || '')
+        .trim()
+        .toLowerCase()
+      return (
+        pSup === sId ||
+        pNom === sNom ||
+        pAsig === sId ||
+        pAsig === sNom ||
+        pSup === sNom
+      )
+    })
+
+    const totalPracticantes = misPracticantesHoy.length
+    const presentes = misPracticantesHoy.filter(
+      (p) => p.entrada && !p.salida,
+    ).length
+
+    let minSemana = 0
+    let metaSemana = 0
+    misPracticantesSemana.forEach((p) => {
+      minSemana += p.minutosSemanaTotal || 0
+      metaSemana += p.metaSemanalMinutos || 1200
+    })
+
+    const pctCumplimiento =
+      metaSemana > 0 ? Math.round((minSemana / metaSemana) * 100) : 0
+
+    const inicial = (sup.nombre || sup.usuario || 'S').charAt(0).toUpperCase()
+    const supIdVal = sup.idSupervisor || sup.usuario
+
+    const card = document.createElement('div')
+    card.className = 'supervisor-card'
+    card.innerHTML = `
+      <div class="supervisor-card-header">
+        <div class="supervisor-card-user-info">
+          <div class="supervisor-avatar">${inicial}</div>
+          <div>
+            <div class="supervisor-title-text">${sup.nombre || sup.usuario}</div>
+            <div class="supervisor-sub-text">${sup.oficina || 'General'} • @${sup.usuario}</div>
+          </div>
+        </div>
+        ${sup.esAdmin ? '<span class="badge-role-admin" style="font-size: 0.65rem;">ADMIN</span>' : ''}
+      </div>
+
+      <div class="supervisor-stats-grid">
+        <div class="supervisor-stat-box">
+          <div class="supervisor-stat-num">${totalPracticantes}</div>
+          <div class="supervisor-stat-lbl">Practicantes</div>
+        </div>
+        <div class="supervisor-stat-box">
+          <div class="supervisor-stat-num" style="color: #10b981;">${presentes}</div>
+          <div class="supervisor-stat-lbl">En Oficina</div>
+        </div>
+        <div class="supervisor-stat-box">
+          <div class="supervisor-stat-num" style="color: #2563eb;">${pctCumplimiento}%</div>
+          <div class="supervisor-stat-lbl">Cumplimiento</div>
+        </div>
+      </div>
+
+      <div class="supervisor-card-footer">
+        <div style="font-size: 0.78rem; color: var(--slate-500);">
+          Horas: <strong>${formatearMinutos(minSemana)}</strong>
+        </div>
+        <button
+          type="button"
+          class="btn btn-outline btn-sm btn-ver-equipo"
+          onclick="enfocarEquipoSupervisor('${supIdVal}')"
+          title="Ver practicantes de ${sup.nombre || sup.usuario}"
+        >
+          Ver Equipo ▶
+        </button>
+      </div>
+    `
+    gridContainer.appendChild(card)
+  })
+}
+
+function enfocarEquipoSupervisor(idSupervisor) {
+  if (!idSupervisor) return
+  cambiarFiltroSupervisor(idSupervisor)
+  cambiarTab('hoy')
+}
+
+// ==========================================================
+// BITÁCORA DE AUDITORÍA EN TIEMPO REAL (ADMINISTRADOR)
+// ==========================================================
+async function cargarAuditoriaRegistros(forzar = false) {
+  if (!appState.esAdmin) return
+  if (appState.auditoriaCargada && !forzar) {
+    renderizarTablaAuditoria()
+    return
+  }
+
+  const tbody = document.getElementById('tabla-auditoria-body')
+  if (tbody) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="9" style="text-align: center; color: var(--slate-400); padding: 36px;">
+          <span class="sync-spinner" style="margin-right: 8px;"></span>
+          Consultando bitácora de auditoría desde Google Sheets...
+        </td>
+      </tr>
+    `
+  }
+
+  try {
+    const usuarioId =
+      appState.supervisor?.idSupervisor || appState.supervisor?.usuario || ''
+    const res = await llamarAppsScript(
+      {
+        accion: 'obtener_auditoria_registros',
+        usuario: usuarioId,
+        limite: 150,
+      },
+      false,
+    )
+
+    if (res && res.success) {
+      appState.registrosAuditoria = res.registros || []
+      appState.auditoriaCargada = true
+
+      const subInfo = document.getElementById('auditoria-sub-info')
+      if (subInfo) {
+        const ahora = new Date().toLocaleTimeString('es-PE', { hour12: false })
+        subInfo.textContent = `Mostrando los últimos ${appState.registrosAuditoria.length} registros (Actualizado ${ahora})`
+      }
+      renderizarTablaAuditoria()
+    } else {
+      throw new Error(res.error || 'No se pudo obtener la auditoría.')
+    }
+  } catch (err) {
+    console.error('Error al cargar auditoría:', err)
+    if (tbody) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="9" style="text-align: center; color: var(--danger, #ef4444); padding: 32px;">
+            Error al cargar auditoría: ${err.message || 'Error de conexión'}
+          </td>
+        </tr>
+      `
+    }
+    mostrarToast('No se pudo cargar la bitácora de auditoría.', 'error')
+  }
+}
+
+function filtrarTablaAuditoria() {
+  renderizarTablaAuditoria()
+}
+
+function renderizarTablaAuditoria() {
+  const tbody = document.getElementById('tabla-auditoria-body')
+  if (!tbody) return
+
+  const selectTipo = document.getElementById('filtro-auditoria-tipo')
+  const inputBusqueda = document.getElementById('filtro-auditoria-busqueda')
+
+  const filtroTipo = selectTipo ? selectTipo.value : 'TODOS'
+  const filtroTexto = (inputBusqueda ? inputBusqueda.value : '')
+    .trim()
+    .toLowerCase()
+
+  const registros = appState.registrosAuditoria || []
+
+  if (registros.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="9" style="text-align: center; color: var(--slate-400); padding: 36px;">
+          No hay registros de auditoría disponibles.
+        </td>
+      </tr>
+    `
+    return
+  }
+
+  const filtrados = registros.filter((r) => {
+    // Filtro por tipo de evento
+    if (filtroTipo !== 'TODOS') {
+      const tipo = String(r.tipo || '').toUpperCase()
+      const estado = String(r.estado || '').toUpperCase()
+      if (filtroTipo === 'ANULADO') {
+        if (estado !== 'ANULADO') return false
+      } else if (filtroTipo === 'INCIDENCIA') {
+        if (
+          tipo !== 'INCIDENCIA' &&
+          tipo !== 'PERMISO' &&
+          tipo !== 'JUSTIFICACION'
+        ) {
+          return false
+        }
+      } else {
+        if (tipo !== filtroTipo) return false
+      }
+    }
+
+    // Filtro por texto
+    if (filtroTexto) {
+      const pNom = String(r.practicanteNombre || '').toLowerCase()
+      const pId = String(r.practicanteId || '').toLowerCase()
+      const sup = String(r.supervisorAsignado || '').toLowerCase()
+      const regPor = String(
+        r.registradoPorNombre || r.registradoPorId || '',
+      ).toLowerCase()
+      const obs = String(r.observaciones || '').toLowerCase()
+      const fecha = String(r.fecha || '').toLowerCase()
+
+      const coincide =
+        pNom.includes(filtroTexto) ||
+        pId.includes(filtroTexto) ||
+        sup.includes(filtroTexto) ||
+        regPor.includes(filtroTexto) ||
+        obs.includes(filtroTexto) ||
+        fecha.includes(filtroTexto)
+
+      if (!coincide) return false
+    }
+
+    return true
+  })
+
+  if (filtrados.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="9" style="text-align: center; color: var(--slate-400); padding: 36px;">
+          No se encontraron registros que coincidan con los filtros aplicados.
+        </td>
+      </tr>
+    `
+    return
+  }
+
+  tbody.innerHTML = filtrados
+    .map((r) => {
+      // Badge según tipo
+      let badgeTipo = ''
+      const tipoUpper = String(r.tipo || '').toUpperCase()
+      const estadoUpper = String(r.estado || '').toUpperCase()
+
+      if (estadoUpper === 'ANULADO') {
+        badgeTipo = `<span class="badge-audit-evento badge-audit-anulado">Anulado</span>`
+      } else if (tipoUpper === 'ENTRADA') {
+        badgeTipo = `<span class="badge-audit-evento badge-audit-entrada">Entrada</span>`
+      } else if (tipoUpper === 'SALIDA') {
+        badgeTipo = `<span class="badge-audit-evento badge-audit-salida">Salida</span>`
+      } else {
+        badgeTipo = `<span class="badge-audit-evento badge-audit-incidencia">${r.tipo || 'Incidencia'}</span>`
+      }
+
+      // Estado badge
+      let estadoBadge = ''
+      if (estadoUpper === 'ANULADO') {
+        estadoBadge = `<span style="color: #dc2626; font-weight: 600;">Anulado</span>`
+      } else {
+        estadoBadge = `<span style="color: #059669; font-weight: 600;">Activo</span>`
+      }
+
+      // Modo badge
+      const modoStr = String(r.modo || 'REAL').toUpperCase()
+      let modoBadge = `<span class="cell-pill cell-pending">${modoStr}</span>`
+      if (modoStr === 'OFICIAL') {
+        modoBadge = `<span class="cell-pill cell-current">Oficial</span>`
+      } else if (modoStr === 'REAL') {
+        modoBadge = `<span class="cell-pill cell-completed">Real</span>`
+      }
+
+      // Formateo de fecha y hora
+      const fechaStr = r.fecha || '--'
+      const horaStr = r.hora ? formatearHoraSinSegundos(r.hora) : '--'
+
+      return `
+        <tr ${estadoUpper === 'ANULADO' ? 'style="opacity: 0.7; background: #fffaf0;"' : ''}>
+          <td>
+            <div style="font-weight: 600; color: var(--slate-800);">${fechaStr}</div>
+            <div style="font-size: 0.75rem; color: var(--slate-400);">${horaStr}</div>
+          </td>
+          <td>
+            <div style="font-weight: 600; color: var(--slate-800);">${r.practicanteNombre || r.practicanteId}</div>
+            <div style="font-size: 0.75rem; color: var(--slate-400);">${r.practicanteId || ''}</div>
+          </td>
+          <td>
+            <span class="card-supervisor-badge" style="font-size: 0.72rem;">
+              ${r.supervisorAsignado || 'General'}
+            </span>
+          </td>
+          <td style="text-align: center;">${badgeTipo}</td>
+          <td style="text-align: center;">${modoBadge}</td>
+          <td>
+            <div style="font-size: 0.82rem; font-weight: 600; color: var(--slate-700);">
+              ${r.registradoPorNombre || r.registradoPorId || '--'}
+            </div>
+          </td>
+          <td style="text-align: center; font-size: 0.82rem; color: var(--slate-600);">
+            ${r.horasTrabajadas ? `${r.horasTrabajadas}` : '--'}
+          </td>
+          <td style="text-align: center; font-size: 0.82rem;">
+            ${estadoBadge}
+          </td>
+          <td style="font-size: 0.8rem; color: var(--slate-600); max-width: 220px;">
+            <div>${r.observaciones || '<span style="color: var(--slate-300);">--</span>'}</div>
+            ${
+              estadoUpper !== 'ANULADO' && r.practicanteId && r.fecha
+                ? `<div style="margin-top: 5px;">
+                    <button type="button" class="btn btn-outline btn-xs" style="padding: 2px 7px; font-size: 0.72rem; display: inline-flex; align-items: center; gap: 4px;" onclick="abrirModalDetalleJornada('${r.practicanteId}', '${r.fecha}')" title="Ver jornada o corregir horario">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                      </svg>
+                      Ver / Editar
+                    </button>
+                   </div>`
+                : ''
+            }
+          </td>
+        </tr>
+      `
+    })
+    .join('')
+}
+
+// ==========================================================
+// EXPORTACIÓN A CSV (REPORTE SEMANAL)
+// ==========================================================
+function exportarReporteSemanalCSV() {
+  const listaBase =
+    appState.practicantesReporteSemana &&
+    appState.practicantesReporteSemana.length > 0
+      ? appState.practicantesReporteSemana
+      : appState.practicantes || []
+
+  const listaFiltrada =
+    obtenerPracticantesFiltradosPorSupervisorYTexto(listaBase)
+
+  if (!listaFiltrada || listaFiltrada.length === 0) {
+    mostrarToast(
+      'No hay datos disponibles para exportar con los filtros actuales.',
+      'warning',
+    )
+    return
+  }
+
+  // Obtener nombres de días de la semana y fechas
+  const nombresDias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes']
+  const fechasDias = ['', '', '', '', '']
+  const primerDesglose = listaFiltrada[0]?.desgloseSemanal
+  if (primerDesglose && primerDesglose.length === 5) {
+    primerDesglose.forEach((d, i) => {
+      if (d.fecha) fechasDias[i] = ` (${d.fecha})`
+    })
+  }
+
+  // Construir columnas del encabezado
+  const columnas = [
+    'Practicante',
+    'ID / Usuario',
+    'Supervisor Asignado',
+    'Oficina',
+    'Horario Oficial',
+    `${nombresDias[0]}${fechasDias[0]}`,
+    `${nombresDias[1]}${fechasDias[1]}`,
+    `${nombresDias[2]}${fechasDias[2]}`,
+    `${nombresDias[3]}${fechasDias[3]}`,
+    `${nombresDias[4]}${fechasDias[4]}`,
+    'Total Horas Trabajadas',
+    'Meta Semanal',
+    'Saldo Horas',
+  ]
+
+  const escaparCSV = (val) => {
+    if (val === null || val === undefined) return '""'
+    const str = String(val).replace(/"/g, '""')
+    return `"${str}"`
+  }
+
+  const filas = []
+  filas.push(columnas.map(escaparCSV).join(','))
+
+  listaFiltrada.forEach((p) => {
+    const horarioStr = `${formatearHoraSinSegundos(p.horaEntradaOficial)} - ${formatearHoraSinSegundos(p.horaSalidaOficial)}`
+    const desglose = p.desgloseSemanal || []
+
+    const celdasDias = [0, 1, 2, 3, 4].map((i) => {
+      const d = desglose[i]
+      if (!d) return '--'
+      if (
+        d.estado === 'COMPLETADO' ||
+        d.estado === 'PERMISO_COMPUTADO' ||
+        d.estado === 'FERIADO'
+      ) {
+        const hRealEntrada = d.horaEntradaReal
+          ? ` (E: ${formatearHoraSinSegundos(d.horaEntradaReal)}`
+          : ''
+        const hRealSalida = d.horaSalidaReal
+          ? ` S: ${formatearHoraSinSegundos(d.horaSalidaReal)})`
+          : hRealEntrada
+            ? ')'
+            : ''
+        return `${formatearMinutos(d.minutos || 0)}${hRealEntrada}${hRealSalida}`
+      }
+      if (d.estado === 'EN_CURSO')
+        return `En curso (${formatearMinutos(d.minutos || 0)})`
+      if (d.estado === 'FALTA') return 'Falta (0h 00m)'
+      return '--'
+    })
+
+    const totalSemanaStr = formatearMinutos(p.minutosSemanaTotal || 0)
+    const metaSemanaStr = formatearMinutos(p.metaSemanalMinutos || 1200)
+    const saldoMin = p.saldoSemanalMinutos || 0
+    const saldoStr =
+      saldoMin > 0
+        ? `+${formatearMinutos(saldoMin)}`
+        : saldoMin < 0
+          ? `-${formatearMinutos(Math.abs(saldoMin))}`
+          : 'Al día'
+
+    const fila = [
+      p.nombre || p.usuario,
+      p.idPracticante || p.usuario,
+      p.supervisorNombre || p.supervisorAsignado || p.supervisor || 'General',
+      p.oficina || 'General',
+      horarioStr,
+      celdasDias[0],
+      celdasDias[1],
+      celdasDias[2],
+      celdasDias[3],
+      celdasDias[4],
+      totalSemanaStr,
+      metaSemanaStr,
+      saldoStr,
+    ]
+
+    filas.push(fila.map(escaparCSV).join(','))
+  })
+
+  // Generar Blob con BOM UTF-8 (\uFEFF) para compatibilidad con Microsoft Excel
+  const contenidoCSV = '\uFEFF' + filas.join('\r\n')
+  const blob = new Blob([contenidoCSV], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+
+  const semObj = (appState.semanasDisponibles || []).find(
+    (s) => s.lunes === appState.semanaSeleccionadaLunes,
+  )
+  const semanaNombre = (
+    semObj?.label ||
+    appState.semanaSeleccionadaLunes ||
+    'Actual'
+  ).replace(/[^a-zA-Z0-9_-]/g, '_')
+
+  const link = document.createElement('a')
+  link.setAttribute('href', url)
+  link.setAttribute('download', `Reporte_Asistencia_${semanaNombre}.csv`)
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+
+  mostrarToast('Reporte CSV descargado exitosamente.', 'success')
+}
+
+// ==========================================================
+// CALENDARIO MENSUAL DE ASISTENCIA (ADMINISTRADOR)
+// ==========================================================
+
+const MESES_NOMBRES = [
+  'Enero',
+  'Febrero',
+  'Marzo',
+  'Abril',
+  'Mayo',
+  'Junio',
+  'Julio',
+  'Agosto',
+  'Septiembre',
+  'Octubre',
+  'Noviembre',
+  'Diciembre',
+]
+
+const MESES_CORTOS = [
+  'Ene',
+  'Feb',
+  'Mar',
+  'Abr',
+  'May',
+  'Jun',
+  'Jul',
+  'Ago',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dic',
+]
+
+/**
+ * Obtiene la fecha de hoy en formato ISO YYYY-MM-DD
+ */
+function obtenerFechaHoyISO() {
+  const ahora = new Date()
+  const y = ahora.getFullYear()
+  const m = String(ahora.getMonth() + 1).padStart(2, '0')
+  const d = String(ahora.getDate()).padStart(2, '0')
+  return appState.fechaHoy || `${y}-${m}-${d}`
+}
+
+/**
+ * Carga todo el archivo histórico restante del sistema en segundo plano
+ * Se dispara una sola vez cuando el administrador consulta cualquier mes no precargado
+ */
+async function asegurarHistoricoCompleto() {
+  if (appState.historicoCompletoCargado || appState.historicoCompletoCargando)
+    return
+
+  appState.historicoCompletoCargando = true
+  const spinnerCal = document.getElementById('cal-loading-spinner')
+  if (spinnerCal) spinnerCal.classList.remove('hidden')
+  mostrarLoading('Cargando archivo histórico completo de asistencias...')
+
+  try {
+    const usuarioSup =
+      appState.supervisor?.idSupervisor || appState.supervisor?.usuario || ''
+    const res = await llamarAppsScript(
+      {
+        accion: 'obtener_reporte_historico_completo',
+        usuario: usuarioSup,
+        filtroSupervisor: appState.esAdmin ? appState.filtroSupervisor : '',
+        excluirFechasLunes: Object.keys(appState.cacheReporteSemanal || {}),
+      },
+      false,
+    )
+
+    if (res && res.success) {
+      if (res.semanas) {
+        Object.assign(appState.cacheReporteSemanal, res.semanas)
+      }
+      if (res.semanasDisponibles && res.semanasDisponibles.length > 0) {
+        appState.semanasDisponibles = res.semanasDisponibles
+      }
+      appState.historicoCompletoCargado = true
+      mostrarToast('Archivo histórico completo cargado.', 'success')
+    }
+  } catch (err) {
+    console.error('Error al cargar archivo histórico:', err)
+    mostrarToast('No se pudo cargar todo el archivo histórico.', 'warning')
+  } finally {
+    ocultarLoading()
+    appState.historicoCompletoCargando = false
+    if (spinnerCal) spinnerCal.classList.add('hidden')
+  }
+}
+
+/**
+ * Verifica si las semanas de un mes están en caché.
+ * Si falta alguna, descarga el histórico completo de una sola vez.
+ */
+async function verificarYCargarHistoricoParaMes(anio, mesIndex) {
+  if (appState.historicoCompletoCargado) return
+
+  const totalDias = new Date(anio, mesIndex + 1, 0).getDate()
+  let faltaSemana = false
+
+  for (let d = 1; d <= totalDias; d += 7) {
+    const fecha = new Date(anio, mesIndex, d)
+    const diaSem = fecha.getDay()
+    const diffLunes = fecha.getDate() - diaSem + (diaSem === 0 ? -6 : 1)
+    const lunes = new Date(fecha.setDate(diffLunes))
+    const y = lunes.getFullYear()
+    const m = String(lunes.getMonth() + 1).padStart(2, '0')
+    const dia = String(lunes.getDate()).padStart(2, '0')
+    const lunesStr = `${y}-${m}-${dia}`
+
+    if (!appState.cacheReporteSemanal[lunesStr]) {
+      faltaSemana = true
+      break
+    }
+  }
+
+  if (faltaSemana) {
+    await asegurarHistoricoCompleto()
+  }
+}
+
+/**
+ * Navega adelante o atrás en los meses del calendario
+ */
+async function cambiarMesCalendario(delta) {
+  let nuevoMes = appState.calendar.currentMonth + delta
+  let nuevoAnio = appState.calendar.currentYear
+
+  if (nuevoMes < 0) {
+    nuevoMes = 11
+    nuevoAnio -= 1
+  } else if (nuevoMes > 11) {
+    nuevoMes = 0
+    nuevoAnio += 1
+  }
+
+  appState.calendar.currentYear = nuevoAnio
+  appState.calendar.currentMonth = nuevoMes
+  appState.calendar.selectedDateStr = null
+
+  await verificarYCargarHistoricoParaMes(nuevoAnio, nuevoMes)
+  renderizarPanelCalendario()
+}
+
+/**
+ * Selecciona un mes específico desde la tira interactiva de 12 meses
+ */
+async function seleccionarMesCalendario(mesIndex) {
+  appState.calendar.currentMonth = mesIndex
+  appState.calendar.selectedDateStr = null
+
+  await verificarYCargarHistoricoParaMes(
+    appState.calendar.currentYear,
+    mesIndex,
+  )
+  renderizarPanelCalendario()
+}
+
+/**
+ * Vuelve al mes actual y selecciona la jornada de hoy
+ */
+function irAMesActualCalendario() {
+  const hoy = new Date()
+  appState.calendar.currentYear = hoy.getFullYear()
+  appState.calendar.currentMonth = hoy.getMonth()
+  appState.calendar.selectedDateStr = obtenerFechaHoyISO()
+  renderizarPanelCalendario()
+}
+
+/**
+ * Selecciona un día del calendario para aislarlo en la lista lateral
+ */
+function seleccionarDiaCalendario(fechaStr) {
+  appState.calendar.selectedDateStr = fechaStr
+  renderizarPanelCalendario()
+}
+
+/**
+ * Recopila todas las jornadas de un mes desde el caché de semanas y la memoria en vivo
+ */
+function recopilarJornadasMes(anio, mesIndex) {
+  const mapaDias = {}
+  const prefijoMes = `${anio}-${String(mesIndex + 1).padStart(2, '0')}`
+
+  // 1. Recorrer semanas en caché
+  const semanasCache = Object.values(appState.cacheReporteSemanal || {})
+
+  semanasCache.forEach((listaPracticantes) => {
+    if (!Array.isArray(listaPracticantes)) return
+
+    listaPracticantes.forEach((p) => {
+      if (!p.desgloseSemanal || !Array.isArray(p.desgloseSemanal)) return
+
+      p.desgloseSemanal.forEach((d) => {
+        if (!d.fecha || !d.fecha.startsWith(prefijoMes)) return
+
+        if (!mapaDias[d.fecha]) {
+          mapaDias[d.fecha] = []
+        }
+
+        const claveP = p.idPracticante || p.usuario
+        const yaExiste = mapaDias[d.fecha].some(
+          (item) =>
+            (item.practicante.idPracticante || item.practicante.usuario) ===
+            claveP,
+        )
+
+        if (!yaExiste) {
+          mapaDias[d.fecha].push({
+            practicante: p,
+            dia: d,
+          })
+        }
+      })
+    })
+  })
+
+  // 2. Sincronizar jornada de hoy en vivo si corresponde a este mes
+  const hoy = new Date()
+  if (hoy.getFullYear() === anio && hoy.getMonth() === mesIndex) {
+    const hoyISO = obtenerFechaHoyISO()
+    if (appState.practicantes && appState.practicantes.length > 0) {
+      if (!mapaDias[hoyISO]) mapaDias[hoyISO] = []
+
+      appState.practicantes.forEach((p) => {
+        const claveP = p.idPracticante || p.usuario
+        const idx = mapaDias[hoyISO].findIndex(
+          (item) =>
+            (item.practicante.idPracticante || item.practicante.usuario) ===
+            claveP,
+        )
+
+        let estadoHoy = 'PENDIENTE'
+        if (p.incidencia) {
+          estadoHoy =
+            p.incidencia.tipo === 'PERMISO_AUTORIZADO' ||
+            p.incidencia.tipo === 'DESCANSO_MEDICO'
+              ? 'PERMISO_COMPUTADO'
+              : 'FALTA'
+        } else if (p.entrada && p.salida) {
+          estadoHoy = 'COMPLETADO'
+        } else if (p.entrada && !p.salida) {
+          estadoHoy = 'EN_CURSO'
+        }
+
+        const diaHoyObj = (p.desgloseSemanal || []).find(
+          (d) => d.fecha === hoyISO,
+        ) || {
+          fecha: hoyISO,
+          diaNombre: 'Hoy',
+          minutos: p.minutosHoy || 0,
+          estado: estadoHoy,
+          horaEntradaReal: p.entrada ? p.entrada.hora : null,
+          horaSalidaReal: p.salida ? p.salida.hora : null,
+          entrada: p.entrada || null,
+          salida: p.salida || null,
+          incidencia: p.incidencia || null,
+        }
+
+        if (idx >= 0) {
+          mapaDias[hoyISO][idx] = { practicante: p, dia: diaHoyObj }
+        } else {
+          mapaDias[hoyISO].push({ practicante: p, dia: diaHoyObj })
+        }
+      })
+    }
+  }
+
+  return mapaDias
+}
+
+/**
+ * Obtiene la lista ordenada de Sedes / Oficinas disponibles en todo el sistema
+ */
+function obtenerSedesDisponibles() {
+  const setSedes = new Set()
+  if (Array.isArray(appState.practicantes)) {
+    appState.practicantes.forEach((p) => {
+      if (p.oficina && String(p.oficina).trim()) {
+        setSedes.add(String(p.oficina).trim())
+      }
+    })
+  }
+  if (Array.isArray(appState.supervisoresDisponibles)) {
+    appState.supervisoresDisponibles.forEach((s) => {
+      if (s.oficina && String(s.oficina).trim()) {
+        setSedes.add(String(s.oficina).trim())
+      }
+    })
+  }
+  const semanas = Object.values(appState.cacheReporteSemanal || {})
+  semanas.forEach((lista) => {
+    if (Array.isArray(lista)) {
+      lista.forEach((p) => {
+        if (p.oficina && String(p.oficina).trim()) {
+          setSedes.add(String(p.oficina).trim())
+        }
+      })
+    }
+  })
+  return Array.from(setSedes).sort((a, b) =>
+    a.localeCompare(b, 'es', { sensitivity: 'base' }),
+  )
+}
+
+/**
+ * Clasificador unificado de Estado para filtros del Calendario
+ */
+function determinarEstadoFiltro(dia, practicante) {
+  if (!dia) return 'OTRO'
+  const estado = String(dia.estado || '').toUpperCase()
+
+  if (estado === 'FERIADO') return 'FERIADO'
+  if (
+    estado === 'PERMISO_COMPUTADO' ||
+    (dia.incidencia && dia.incidencia.tipo !== 'FALTA')
+  ) {
+    return 'PERMISO'
+  }
+  if (
+    estado === 'FALTA' ||
+    (dia.incidencia && dia.incidencia.tipo === 'FALTA')
+  ) {
+    return 'FALTA'
+  }
+  if (estado === 'EN_CURSO') return 'EN_CURSO'
+
+  const punt = dia.puntualidad || obtenerPuntualidad(dia, practicante, 5)
+  if (punt && punt.nivel === 'rojo') return 'TARDE'
+  if (punt && punt.nivel === 'naranja') return 'TOLERANCIA'
+  if (punt && punt.nivel === 'verde') return 'A_TIEMPO'
+  if (estado === 'COMPLETADO') return 'A_TIEMPO'
+
+  return 'OTRO'
+}
+
+/**
+ * Configuración de etiquetas y opciones de Estados para el Calendario
+ */
+const CONFIG_ESTADOS_CALENDARIO = [
+  {
+    key: 'TODOS',
+    label: 'Todos',
+    selectLabel: 'Todos los Estados',
+    siempreEnChips: true,
+  },
+  {
+    key: 'A_TIEMPO',
+    label: 'A tiempo',
+    selectLabel: 'A Tiempo (Temprano)',
+    siempreEnChips: true,
+  },
+  {
+    key: 'TOLERANCIA',
+    label: 'Tolerancia',
+    selectLabel: 'Con Tolerancia',
+    siempreEnChips: false,
+  },
+  {
+    key: 'TARDE',
+    label: 'Tardanzas',
+    selectLabel: 'Tardanzas',
+    siempreEnChips: true,
+  },
+  {
+    key: 'FALTA',
+    label: 'Faltas',
+    selectLabel: 'Faltas / Inasistencias',
+    siempreEnChips: true,
+  },
+  {
+    key: 'PERMISO',
+    label: 'Permisos',
+    selectLabel: 'Permisos / Descansos',
+    siempreEnChips: true,
+  },
+  {
+    key: 'FERIADO',
+    label: 'Feriados',
+    selectLabel: 'Feriados',
+    siempreEnChips: false,
+  },
+  {
+    key: 'EN_CURSO',
+    label: 'En curso',
+    selectLabel: 'Jornadas En Curso',
+    siempreEnChips: false,
+  },
+]
+
+/**
+ * Puebla dinámicamente las opciones del selector de Sede / Oficina
+ */
+function poblarSelectorSedesCalendario(mapaJornadasMes = {}) {
+  const selSede = document.getElementById('filtro-cal-sede')
+  if (!selSede) return
+
+  const valorActual = (appState.calendar.filtroSede || 'TODAS').toUpperCase()
+  const sedes = obtenerSedesDisponibles()
+
+  // Contar registros por sede en el mes actual (respetando filtro de supervisor si está activo)
+  const filtroSup = (appState.filtroSupervisor || 'TODOS').trim().toLowerCase()
+  const conteoSedes = {}
+  let totalMesSedes = 0
+
+  Object.values(mapaJornadasMes).forEach((jornadasDia) => {
+    if (!Array.isArray(jornadasDia)) return
+    jornadasDia.forEach(({ practicante: p }) => {
+      if (filtroSup !== 'todos') {
+        const pSupId = String(p.supervisor || '')
+          .trim()
+          .toLowerCase()
+        const pSupNom = String(p.supervisorNombre || '')
+          .trim()
+          .toLowerCase()
+        const pSupAsig = String(p.supervisorAsignado || '')
+          .trim()
+          .toLowerCase()
+        const coincide =
+          pSupId === filtroSup ||
+          pSupNom === filtroSup ||
+          pSupAsig === filtroSup ||
+          (p.supervisor &&
+            String(p.supervisor).toLowerCase().includes(filtroSup))
+        if (!coincide) return
+      }
+      totalMesSedes++
+      const ofiNorm = (p.oficina || 'General').trim().toUpperCase()
+      conteoSedes[ofiNorm] = (conteoSedes[ofiNorm] || 0) + 1
+    })
+  })
+
+  let html = `<option value="TODAS">Todas las Sedes (${totalMesSedes})</option>`
+  sedes.forEach((sede) => {
+    const key = sede.toUpperCase()
+    const cnt = conteoSedes[key] || 0
+    html += `<option value="${key}">${sede} (${cnt})</option>`
+  })
+
+  selSede.innerHTML = html
+
+  if (
+    valorActual === 'TODAS' ||
+    sedes.some((s) => s.toUpperCase() === valorActual)
+  ) {
+    selSede.value = valorActual
+  } else {
+    selSede.value = 'TODAS'
+    appState.calendar.filtroSede = 'TODAS'
+  }
+}
+
+/**
+ * Puebla dinámicamente el selector de Estado y sus Tags (Chips) con conteos en tiempo real
+ */
+function actualizarFiltrosYChipsEstadoCalendario(mapaJornadasMes = {}) {
+  const selEstado = document.getElementById('filtro-cal-estado')
+  const contenedorChips = document.getElementById('cal-chips-estado')
+  if (!selEstado && !contenedorChips) return
+
+  const filtroSup = (appState.filtroSupervisor || 'TODOS').trim().toLowerCase()
+  const filtroSede = (appState.calendar.filtroSede || 'TODAS')
+    .trim()
+    .toUpperCase()
+  const valorActual = appState.calendar.filtroEstado || 'TODOS'
+
+  // Contar estados en las jornadas del mes que coinciden con Sede y Supervisor
+  const conteoEstados = {}
+  let totalJornadasMes = 0
+
+  Object.values(mapaJornadasMes).forEach((jornadasDia) => {
+    if (!Array.isArray(jornadasDia)) return
+    jornadasDia.forEach(({ practicante: p, dia: d }) => {
+      // Filtro supervisor
+      if (filtroSup !== 'todos') {
+        const pSupId = String(p.supervisor || '')
+          .trim()
+          .toLowerCase()
+        const pSupNom = String(p.supervisorNombre || '')
+          .trim()
+          .toLowerCase()
+        const pSupAsig = String(p.supervisorAsignado || '')
+          .trim()
+          .toLowerCase()
+        const coincide =
+          pSupId === filtroSup ||
+          pSupNom === filtroSup ||
+          pSupAsig === filtroSup ||
+          (p.supervisor &&
+            String(p.supervisor).toLowerCase().includes(filtroSup))
+        if (!coincide) return
+      }
+
+      // Filtro sede
+      if (filtroSede !== 'TODAS') {
+        const ofi = String(p.oficina || '').toUpperCase()
+        if (ofi !== filtroSede && !ofi.includes(filtroSede)) return
+      }
+
+      totalJornadasMes++
+      const est = determinarEstadoFiltro(d, p)
+      conteoEstados[est] = (conteoEstados[est] || 0) + 1
+    })
+  })
+
+  // 1. Poblar Select de Estados dinámicamente
+  if (selEstado) {
+    let htmlSelect = `<option value="TODOS">Todos los Estados (${totalJornadasMes})</option>`
+    CONFIG_ESTADOS_CALENDARIO.forEach(({ key, selectLabel }) => {
+      if (key === 'TODOS') return
+      const cnt = conteoEstados[key] || 0
+      htmlSelect += `<option value="${key}">${selectLabel} (${cnt})</option>`
+    })
+    selEstado.innerHTML = htmlSelect
+    selEstado.value = valorActual
+  }
+
+  // 2. Poblar Tags / Chips interactivos dinámicamente
+  if (contenedorChips) {
+    let htmlChips = ''
+    CONFIG_ESTADOS_CALENDARIO.forEach(({ key, label, siempreEnChips }) => {
+      const cnt = key === 'TODOS' ? totalJornadasMes : conteoEstados[key] || 0
+      if (siempreEnChips || cnt > 0 || valorActual === key) {
+        const isActive = valorActual === key
+        htmlChips += `
+          <button
+            type="button"
+            class="chip-btn ${isActive ? 'active' : ''}"
+            data-estado="${key}"
+            onclick="seleccionarChipEstadoCalendario('${key}')"
+            title="${label}: ${cnt} registros"
+          >
+            ${label} <span class="chip-count">(${cnt})</span>
+          </button>
+        `
+      }
+    })
+    contenedorChips.innerHTML = htmlChips
+  }
+}
+
+/**
+ * Filtra las jornadas según los filtros de supervisor, sede, estado y texto
+ */
+function filtrarJornadas(jornadas) {
+  if (!Array.isArray(jornadas)) return []
+
+  const filtroSup = (appState.filtroSupervisor || 'TODOS').trim().toLowerCase()
+  const filtroSede = (appState.calendar.filtroSede || 'TODAS')
+    .trim()
+    .toUpperCase()
+  const filtroEst = (appState.calendar.filtroEstado || 'TODOS')
+    .trim()
+    .toUpperCase()
+  const filtroTxt = (appState.filtroTextoPracticante || '').trim().toLowerCase()
+
+  return jornadas.filter(({ practicante: p, dia: d }) => {
+    // 1. Filtro Supervisor
+    if (appState.esAdmin && filtroSup !== 'todos') {
+      const pSupId = String(p.supervisor || '')
+        .trim()
+        .toLowerCase()
+      const pSupNom = String(p.supervisorNombre || '')
+        .trim()
+        .toLowerCase()
+      const pSupAsig = String(p.supervisorAsignado || '')
+        .trim()
+        .toLowerCase()
+      const coincide =
+        pSupId === filtroSup ||
+        pSupNom === filtroSup ||
+        pSupAsig === filtroSup ||
+        (p.supervisor && String(p.supervisor).toLowerCase().includes(filtroSup))
+      if (!coincide) return false
+    }
+
+    // 2. Filtro Sede / Oficina
+    if (filtroSede !== 'TODAS') {
+      const ofi = String(p.oficina || '').toUpperCase()
+      if (ofi !== filtroSede && !ofi.includes(filtroSede)) return false
+    }
+
+    // 3. Filtro Estado / Incidencia (Unificado y dinámico)
+    if (filtroEst !== 'TODOS') {
+      const estItem = determinarEstadoFiltro(d, p)
+      if (filtroEst !== estItem) return false
+    }
+
+    // 4. Filtro Texto de Búsqueda
+    if (filtroTxt) {
+      const nom = String(p.nombre || '').toLowerCase()
+      const usr = String(p.usuario || '').toLowerCase()
+      const id = String(p.idPracticante || '').toLowerCase()
+      const sup = String(p.supervisorNombre || p.supervisor || '').toLowerCase()
+      const ofi = String(p.oficina || '').toLowerCase()
+      const coincide =
+        nom.includes(filtroTxt) ||
+        usr.includes(filtroTxt) ||
+        id.includes(filtroTxt) ||
+        sup.includes(filtroTxt) ||
+        ofi.includes(filtroTxt)
+      if (!coincide) return false
+    }
+
+    return true
+  })
+}
+
+/**
+ * Renderiza la vista completa del panel del calendario
+ */
+function renderizarPanelCalendario() {
+  if (!appState.esAdmin) return
+
+  const { currentYear, currentMonth, selectedDateStr } = appState.calendar
+
+  // 1. Títulos y Badges del encabezado del calendario
+  const elMonthName = document.getElementById('cal-month-name')
+  const elYearText = document.getElementById('cal-year-text')
+  const elBadgeCount = document.getElementById('cal-month-count-badge')
+
+  if (elMonthName) elMonthName.textContent = MESES_NOMBRES[currentMonth]
+  if (elYearText) elYearText.textContent = currentYear
+
+  // 2. Recopilar jornadas del mes completo
+  const mapaJornadasMes = recopilarJornadasMes(currentYear, currentMonth)
+
+  // 3. Poblar y sincronizar dinámicamente Sede, Estados y Tags (Chips)
+  poblarSelectorSedesCalendario(mapaJornadasMes)
+  actualizarFiltrosYChipsEstadoCalendario(mapaJornadasMes)
+
+  // 4. Mostrar u ocultar botón de restablecer filtros
+  const hayFiltrosActivos =
+    appState.calendar.filtroSede !== 'TODAS' ||
+    appState.calendar.filtroEstado !== 'TODOS' ||
+    (appState.filtroTextoPracticante &&
+      appState.filtroTextoPracticante !== '') ||
+    (appState.filtroSupervisor && appState.filtroSupervisor !== 'TODOS')
+
+  const btnReset = document.getElementById('btn-reset-cal-filtros')
+  if (btnReset) {
+    btnReset.style.display = hayFiltrosActivos ? 'inline-flex' : 'none'
+  }
+
+  // 5. Aplicar filtros a las jornadas
+  let totalJornadasMesFiltradas = 0
+  const mapaJornadasFiltradas = {}
+
+  Object.keys(mapaJornadasMes).forEach((fecha) => {
+    const listaFiltrada = filtrarJornadas(mapaJornadasMes[fecha])
+    mapaJornadasFiltradas[fecha] = listaFiltrada
+    totalJornadasMesFiltradas += listaFiltrada.length
+  })
+
+  if (elBadgeCount) {
+    elBadgeCount.textContent = `${totalJornadasMesFiltradas} jornadas`
+  }
+  const elContadorGeneral = document.getElementById('cal-contador-general')
+  if (elContadorGeneral) {
+    elContadorGeneral.textContent = `${totalJornadasMesFiltradas} registros en ${MESES_NOMBRES[currentMonth]}`
+  }
+
+  // 6. Renderizar la tira interactiva de 12 meses
+  renderizarTiraMeses(currentYear, currentMonth)
+
+  // 7. Renderizar la grilla de días del mes
+  renderizarGrillaDiasCalendario(
+    currentYear,
+    currentMonth,
+    mapaJornadasFiltradas,
+    selectedDateStr,
+  )
+
+  // 8. Renderizar el listado del panel lateral ("la tabla al costado")
+  renderizarListaCostadoCalendario(mapaJornadasFiltradas)
+}
+
+/**
+ * Renderiza la tira interactiva de 12 meses
+ */
+function renderizarTiraMeses(currentYear, currentMonth) {
+  const stripEl = document.getElementById('cal-months-strip')
+  if (!stripEl) return
+
+  const countsByMonth = Array(12).fill(0)
+  const semanasCache = Object.values(appState.cacheReporteSemanal || {})
+
+  semanasCache.forEach((listaPracticantes) => {
+    if (!Array.isArray(listaPracticantes)) return
+    listaPracticantes.forEach((p) => {
+      if (!p.desgloseSemanal) return
+      p.desgloseSemanal.forEach((d) => {
+        if (!d.fecha) return
+        const partes = d.fecha.split('-')
+        const y = parseInt(partes[0], 10)
+        const m = parseInt(partes[1], 10) - 1
+        if (y === currentYear && m >= 0 && m < 12) {
+          countsByMonth[m]++
+        }
+      })
+    })
+  })
+
+  stripEl.innerHTML = MESES_CORTOS.map((mesCorto, idx) => {
+    const isActive = idx === currentMonth
+    const count = countsByMonth[idx]
+    const hasData = count > 0
+
+    return `
+      <button
+        type="button"
+        class="cal-month-pill ${isActive ? 'active' : ''} ${hasData ? 'has-data' : ''}"
+        onclick="seleccionarMesCalendario(${idx})"
+        title="${MESES_NOMBRES[idx]} ${currentYear}: ${count > 0 ? `${count} jornadas registradas` : 'Sin registros en caché'}"
+      >
+        ${hasData ? '<span class="pill-dot"></span>' : ''}
+        ${mesCorto}${count > 0 ? ` (${count})` : ''}
+      </button>
+    `
+  }).join('')
+}
+
+/**
+ * Renderiza la grilla mensual de días con sus dots de estado y tooltip nube
+ */
+function renderizarGrillaDiasCalendario(
+  currentYear,
+  currentMonth,
+  mapaJornadasFiltradas,
+  selectedDateStr,
+) {
+  const daysGridEl = document.getElementById('calendar-days-grid')
+  if (!daysGridEl) return
+
+  const hoyISO = obtenerFechaHoyISO()
+
+  // Alineación semanal (Lunes = 0 .. Domingo = 6)
+  const primerDiaSemana = new Date(currentYear, currentMonth, 1).getDay()
+  const offsetLunes = (primerDiaSemana + 6) % 7
+  const totalDiasEnMes = new Date(currentYear, currentMonth + 1, 0).getDate()
+  const diasMesAnterior = new Date(currentYear, currentMonth, 0).getDate()
+
+  let htmlDays = ''
+
+  // Celdas de relleno del mes anterior
+  for (let i = offsetLunes - 1; i >= 0; i--) {
+    const dNum = diasMesAnterior - i
+    htmlDays += `
+      <div class="cal-day-cell other-month">
+        <div class="day-header">
+          <span class="day-number">${dNum}</span>
+        </div>
+      </div>
+    `
+  }
+
+  // Días del mes actual
+  for (let dia = 1; dia <= totalDiasEnMes; dia++) {
+    const diaPad = String(dia).padStart(2, '0')
+    const mesPad = String(currentMonth + 1).padStart(2, '0')
+    const fechaCompletaStr = `${currentYear}-${mesPad}-${diaPad}`
+
+    const jornadasDia = mapaJornadasFiltradas[fechaCompletaStr] || []
+    const hasData = jornadasDia.length > 0
+    const isSelected = selectedDateStr === fechaCompletaStr
+    const isToday = fechaCompletaStr === hoyISO
+
+    let aTiempoCount = 0
+    let toleranciaCount = 0
+    let tardeCount = 0
+    let faltaCount = 0
+    let permisoCount = 0
+    let feriadoCount = 0
+    let enCursoCount = 0
+    const conteoSedesDia = {}
+
+    jornadasDia.forEach(({ practicante: p, dia: d }) => {
+      const estado = String(d.estado || '').toUpperCase()
+      const puntNivel = d.puntualidad?.nivel || ''
+      const ofi = (p.oficina || 'General').trim()
+      conteoSedesDia[ofi] = (conteoSedesDia[ofi] || 0) + 1
+
+      if (estado === 'FERIADO') {
+        feriadoCount++
+      } else if (
+        estado === 'PERMISO_COMPUTADO' ||
+        (d.incidencia && d.incidencia.tipo !== 'FALTA')
+      ) {
+        permisoCount++
+      } else if (estado === 'FALTA') {
+        faltaCount++
+      } else if (estado === 'EN_CURSO') {
+        enCursoCount++
+      } else {
+        if (puntNivel === 'rojo') {
+          tardeCount++
+        } else if (puntNivel === 'naranja') {
+          toleranciaCount++
+        } else {
+          aTiempoCount++
+        }
+      }
+    })
+
+    // Posicionamiento inteligente del tooltip nube (evitar desbordes de pantalla)
+    const colIndex = (offsetLunes + dia - 1) % 7
+    let alignClass = 'align-center'
+    if (colIndex <= 1) alignClass = 'align-left'
+    else if (colIndex >= 5) alignClass = 'align-right'
+
+    const posVerticalClass = dia > 14 ? 'pos-top' : 'pos-bottom'
+
+    htmlDays += `
+      <div
+        class="cal-day-cell ${hasData ? 'has-data' : ''} ${isSelected ? 'selected-day' : ''} ${isToday ? 'day-today' : ''}"
+        ${hasData ? `onclick="seleccionarDiaCalendario('${fechaCompletaStr}')"` : ''}
+        data-date="${fechaCompletaStr}"
+      >
+        <div class="day-header">
+          <span class="day-number">${dia}</span>
+          ${hasData ? `<span class="day-article-badge">${jornadasDia.length}</span>` : ''}
+        </div>
+
+        ${
+          hasData
+            ? `
+          <div class="day-footer">
+            <div class="day-dots-wrap">
+              ${aTiempoCount > 0 ? '<span class="day-dot verde" title="A tiempo"></span>' : ''}
+              ${toleranciaCount > 0 ? '<span class="day-dot naranja" title="Con tolerancia"></span>' : ''}
+              ${tardeCount > 0 ? '<span class="day-dot rojo" title="Tarde"></span>' : ''}
+              ${faltaCount > 0 ? '<span class="day-dot rojo" title="Faltas"></span>' : ''}
+              ${permisoCount > 0 || feriadoCount > 0 ? '<span class="day-dot morado" title="Permiso / Feriado"></span>' : ''}
+              ${enCursoCount > 0 ? '<span class="day-dot azul pulse" title="Jornada en curso"></span>' : ''}
+            </div>
+          </div>
+
+          <!-- Despliegue Blanco Nube (Tooltip interactivo al hover) -->
+          <div class="cal-cloud-tooltip ${posVerticalClass} ${alignClass}">
+            <div class="cloud-tip-head">
+              <span class="cloud-tip-title">${dia} ${MESES_NOMBRES[currentMonth]} ${currentYear}</span>
+              <span class="cloud-tip-badge">${jornadasDia.length} ${jornadasDia.length === 1 ? 'practicante' : 'practicantes'}</span>
+            </div>
+
+            <div class="cloud-tip-breakdown">
+              ${
+                aTiempoCount > 0
+                  ? `
+                <div class="cloud-tip-row">
+                  <div class="cloud-tip-row-left">
+                    <span class="cloud-tip-dot" style="background: #10b981;"></span>
+                    <span>A tiempo:</span>
+                  </div>
+                  <strong class="cloud-tip-num">${aTiempoCount}</strong>
+                </div>
+              `
+                  : ''
+              }
+              ${
+                toleranciaCount > 0
+                  ? `
+                <div class="cloud-tip-row">
+                  <div class="cloud-tip-row-left">
+                    <span class="cloud-tip-dot" style="background: #f59e0b;"></span>
+                    <span>Tolerancia:</span>
+                  </div>
+                  <strong class="cloud-tip-num">${toleranciaCount}</strong>
+                </div>
+              `
+                  : ''
+              }
+              ${
+                tardeCount > 0
+                  ? `
+                <div class="cloud-tip-row">
+                  <div class="cloud-tip-row-left">
+                    <span class="cloud-tip-dot" style="background: #ef4444;"></span>
+                    <span>Tardanzas:</span>
+                  </div>
+                  <strong class="cloud-tip-num">${tardeCount}</strong>
+                </div>
+              `
+                  : ''
+              }
+              ${
+                faltaCount > 0
+                  ? `
+                <div class="cloud-tip-row">
+                  <div class="cloud-tip-row-left">
+                    <span class="cloud-tip-dot" style="background: #dc2626;"></span>
+                    <span>Faltas:</span>
+                  </div>
+                  <strong class="cloud-tip-num">${faltaCount}</strong>
+                </div>
+              `
+                  : ''
+              }
+              ${
+                permisoCount > 0
+                  ? `
+                <div class="cloud-tip-row">
+                  <div class="cloud-tip-row-left">
+                    <span class="cloud-tip-dot" style="background: var(--primary);"></span>
+                    <span>Permisos:</span>
+                  </div>
+                  <strong class="cloud-tip-num">${permisoCount}</strong>
+                </div>
+              `
+                  : ''
+              }
+              ${
+                feriadoCount > 0
+                  ? `
+                <div class="cloud-tip-row">
+                  <div class="cloud-tip-row-left">
+                    <span class="cloud-tip-dot" style="background: var(--primary);"></span>
+                    <span>Feriado:</span>
+                  </div>
+                  <strong class="cloud-tip-num">${feriadoCount}</strong>
+                </div>
+              `
+                  : ''
+              }
+              ${
+                enCursoCount > 0
+                  ? `
+                <div class="cloud-tip-row">
+                  <div class="cloud-tip-row-left">
+                    <span class="cloud-tip-dot" style="background: #2563eb;"></span>
+                    <span>En curso:</span>
+                  </div>
+                  <strong class="cloud-tip-num">${enCursoCount}</strong>
+                </div>
+              `
+                  : ''
+              }
+            </div>
+
+            <div class="cloud-tip-status">
+              ${Object.entries(conteoSedesDia)
+                .map(([ofi, cnt], idx) => {
+                  const colorClase = idx % 2 === 0 ? 'verde' : 'morado'
+                  return `<span class="tip-status-pill ${colorClase}">${cnt} ${ofi}</span>`
+                })
+                .join('')}
+            </div>
+          </div>
+        `
+            : ''
+        }
+      </div>
+    `
+  }
+
+  // Padding de cierre de semana
+  const totalCeldasActuales = offsetLunes + totalDiasEnMes
+  const celdasRestantes = (7 - (totalCeldasActuales % 7)) % 7
+  for (let diaSig = 1; diaSig <= celdasRestantes; diaSig++) {
+    htmlDays += `
+      <div class="cal-day-cell other-month">
+        <div class="day-header">
+          <span class="day-number">${diaSig}</span>
+        </div>
+      </div>
+    `
+  }
+
+  daysGridEl.innerHTML = htmlDays
+}
+
+/**
+ * Traduce los modos técnicos de marcación a lenguaje natural amigable
+ */
+function humanizarModoRegistro(modo) {
+  if (!modo || modo === '--') return 'Sin registro'
+  const m = String(modo).toUpperCase().trim()
+  if (m === 'HORA_OFICIAL') return 'Hora Oficial Asignada'
+  if (m === 'REAL') return 'Tiempo Real (En vivo)'
+  if (m === 'INCIDENCIA') return 'Justificación por Incidencia'
+  if (m === 'PERMISO') return 'Permiso Autorizado'
+  if (m === 'FERIADO') return 'Feriado Oficial'
+  if (m === 'AUTOMATICO') return 'Automático del Sistema'
+  if (m === 'MANUAL') return 'Registro Manual'
+  return modo
+}
+
+/**
+ * Resuelve códigos de supervisores (ej. "SUP-001") al nombre real de la persona
+ */
+function resolverNombreSupervisor(idOrUsuario, practicante) {
+  if (!idOrUsuario || idOrUsuario === '--') return 'No especificado'
+  const val = String(idOrUsuario).trim()
+  const valUpper = val.toUpperCase()
+
+  if (valUpper === 'ADMIN') return 'Administrador'
+  if (valUpper === 'SISTEMA') return 'Sistema Automático'
+
+  const supervisores = appState.supervisoresDisponibles || []
+  const supObj = supervisores.find(
+    (s) =>
+      (s.idSupervisor && s.idSupervisor.toUpperCase() === valUpper) ||
+      (s.usuario && s.usuario.toUpperCase() === valUpper) ||
+      (s.nombre && s.nombre.toUpperCase() === valUpper),
+  )
+  if (supObj && supObj.nombre) return supObj.nombre
+
+  if (practicante) {
+    if (
+      practicante.idSupervisor &&
+      practicante.idSupervisor.toUpperCase() === valUpper
+    ) {
+      return practicante.supervisorNombre || practicante.supervisor || val
+    }
+    if (practicante.supervisorNombre) return practicante.supervisorNombre
+    if (
+      practicante.supervisor &&
+      !practicante.supervisor.toUpperCase().startsWith('SUP-')
+    ) {
+      return practicante.supervisor
+    }
+  }
+
+  if (
+    appState.supervisor &&
+    (appState.supervisor.idSupervisor === val ||
+      appState.supervisor.usuario === val)
+  ) {
+    return appState.supervisor.nombre || appState.supervisor.usuario
+  }
+
+  return val
+}
+
+/**
+ * Renderiza la lista lateral ("la tabla al costado")
+ */
+function renderizarListaCostadoCalendario(mapaJornadasFiltradas) {
+  const container = document.getElementById('cal-side-practicantes-list')
+  const titleEl = document.getElementById('cal-side-title')
+  const subtitleEl = document.getElementById('cal-side-subtitle')
+  const countEl = document.getElementById('cal-side-count')
+
+  if (!container) return
+
+  const { selectedDateStr, currentMonth, currentYear, sideFilterSearch } =
+    appState.calendar
+
+  if (!mapaJornadasFiltradas) {
+    const mapaRaw = recopilarJornadasMes(currentYear, currentMonth)
+    mapaJornadasFiltradas = {}
+    Object.keys(mapaRaw).forEach((fecha) => {
+      mapaJornadasFiltradas[fecha] = filtrarJornadas(mapaRaw[fecha])
+    })
+  }
+
+  let jornadasAMostrar = []
+  let modoVista = 'dia'
+
+  if (selectedDateStr && mapaJornadasFiltradas[selectedDateStr]) {
+    jornadasAMostrar = mapaJornadasFiltradas[selectedDateStr]
+    modoVista = 'dia'
+  } else {
+    modoVista = 'mes'
+    Object.keys(mapaJornadasFiltradas).forEach((fecha) => {
+      jornadasAMostrar.push(...mapaJornadasFiltradas[fecha])
+    })
+  }
+
+  // Filtro de búsqueda rápida en el panel lateral
+  if (sideFilterSearch) {
+    const q = sideFilterSearch.toLowerCase()
+    jornadasAMostrar = jornadasAMostrar.filter(({ practicante: p }) => {
+      return (
+        String(p.nombre || '')
+          .toLowerCase()
+          .includes(q) ||
+        String(p.usuario || '')
+          .toLowerCase()
+          .includes(q) ||
+        String(p.idPracticante || '')
+          .toLowerCase()
+          .includes(q) ||
+        String(p.supervisorNombre || p.supervisor || '')
+          .toLowerCase()
+          .includes(q)
+      )
+    })
+  }
+
+  // Actualizar encabezados
+  if (titleEl) {
+    if (modoVista === 'dia' && selectedDateStr) {
+      const partes = selectedDateStr.split('-')
+      titleEl.innerHTML = `📅 Asistencia del <strong>${partes[2]}/${partes[1]}/${partes[0]}</strong>`
+      if (subtitleEl)
+        subtitleEl.textContent = `Mostrando practicantes con registro en este día`
+    } else {
+      titleEl.innerHTML = `📅 Asistencia de <strong>${MESES_NOMBRES[currentMonth]} ${currentYear}</strong>`
+      if (subtitleEl)
+        subtitleEl.textContent = `Selecciona un día del calendario para aislar una jornada`
+    }
+  }
+
+  if (countEl) {
+    countEl.textContent = jornadasAMostrar.length
+  }
+
+  if (jornadasAMostrar.length === 0) {
+    container.innerHTML = `
+      <div class="side-empty-state">
+        <span class="side-empty-icon">📅</span>
+        <strong style="color: var(--slate-700); font-size: 0.92rem;">Sin asistencias en esta vista</strong>
+        <p style="font-size: 0.78rem;">
+          ${
+            sideFilterSearch
+              ? 'No hay coincidencias con el término buscado.'
+              : 'No se registraron jornadas para los filtros aplicados en esta fecha.'
+          }
+        </p>
+      </div>
+    `
+    return
+  }
+
+  container.innerHTML = jornadasAMostrar
+    .map(({ practicante: p, dia: d }) => {
+      const punt = d.puntualidad || obtenerPuntualidad(d, p, 5)
+      let puntHtml = '<span class="cell-pill cell-completed">A tiempo</span>'
+      if (punt) {
+        if (punt.nivel === 'naranja') {
+          puntHtml = `<span class="cell-pill cell-pending">Tolerancia (+${punt.minutosTarde}m)</span>`
+        } else if (punt.nivel === 'rojo') {
+          puntHtml = `<span class="cell-pill cell-incident">Tarde (+${punt.minutosTarde}m)</span>`
+        }
+      }
+
+      if (d.estado === 'FALTA') {
+        puntHtml = '<span class="cell-pill cell-incident">Falta</span>'
+      } else if (d.estado === 'PERMISO_COMPUTADO') {
+        puntHtml =
+          '<span class="cell-pill cell-completed">Permiso Autorizado</span>'
+      } else if (d.estado === 'FERIADO') {
+        puntHtml = '<span class="cell-pill cell-holiday">Feriado</span>'
+      } else if (d.estado === 'EN_CURSO') {
+        puntHtml = '<span class="cell-pill cell-current pulse">En curso</span>'
+      }
+
+      const hEnt = d.horaEntradaReal
+        ? formatearHoraSinSegundos(d.horaEntradaReal)
+        : '--'
+      const hSal = d.horaSalidaReal
+        ? formatearHoraSinSegundos(d.horaSalidaReal)
+        : '--'
+      const minutosTotal = d.minutos || 0
+      const metaDiaria = p.metaDiariaMinutos || 240
+      const cumplioMeta = minutosTotal >= metaDiaria
+
+      // Determinación de color para Entrada (E:)
+      let colorE = 'gris'
+      if (d.estado === 'FALTA') {
+        colorE = 'rojo'
+      } else if (hEnt !== '--') {
+        if (punt && punt.nivel === 'rojo') {
+          colorE = 'rojo'
+        } else if (punt && punt.nivel === 'naranja') {
+          colorE = 'naranja'
+        } else {
+          colorE = 'verde'
+        }
+      } else if (d.estado === 'PERMISO_COMPUTADO') {
+        colorE = 'verde'
+      }
+
+      // Determinación de color para Salida (S:)
+      let colorS = 'gris'
+      if (d.estado === 'FALTA') {
+        colorS = 'rojo'
+      } else if (hSal !== '--') {
+        const extraerMin = (val) => {
+          const match = String(val).match(/(\d{1,2}):(\d{2})/)
+          if (!match) return 0
+          return parseInt(match[1], 10) * 60 + parseInt(match[2], 10)
+        }
+        const minSalReal = extraerMin(hSal)
+        const minSalOficial = extraerMin(p.horaSalidaOficial)
+        if (minSalReal >= minSalOficial) {
+          colorS = 'verde'
+        } else {
+          const diffSal = minSalOficial - minSalReal
+          colorS = diffSal <= 10 ? 'naranja' : 'rojo'
+        }
+      } else if (d.estado === 'EN_CURSO') {
+        colorS = 'azul'
+      }
+
+      return `
+        <div class="side-practicante-card">
+          <div class="side-card-top">
+            <span class="side-card-name" onclick="abrirModalDetalleJornada('${p.idPracticante || p.usuario}', '${d.fecha}')" title="Ver detalle exhaustivo de la jornada">
+              ${p.nombre || p.usuario}
+            </span>
+            <div class="side-card-badges">
+              <span class="modal-chip-sede">${p.oficina || 'General'}</span>
+              <span class="card-supervisor-badge" title="Supervisor asignado">
+                ${p.supervisorNombre || p.supervisor || 'General'}
+              </span>
+            </div>
+          </div>
+
+          <div class="side-card-schedule">
+            <span>Oficial: ${formatearHoraSinSegundos(p.horaEntradaOficial)} - ${formatearHoraSinSegundos(p.horaSalidaOficial)}</span>
+            ${d.fecha ? `<span style="color: var(--slate-400);">( ${d.fecha})</span>` : ''}
+          </div>
+
+          <div class="side-card-times-row">
+            <span class="cal-time-pill pill-${colorE}">E: <strong>${hEnt}</strong></span>
+            <span class="cal-time-pill pill-${colorS}">S: <strong>${hSal}</strong></span>
+            <span class="side-card-total-time ${cumplioMeta ? 'meta-ok' : 'meta-short'}">
+              ${formatearMinutos(minutosTotal)}
+            </span>
+          </div>
+
+          <div class="side-card-footer">
+            ${puntHtml}
+            <button
+              type="button"
+              class="btn-side-detail"
+              onclick="abrirModalDetalleJornada('${p.idPracticante || p.usuario}', '${d.fecha}')"
+              title="Abrir modal con todos los detalles de la jornada"
+            >
+              Ver Detalle ▶
+            </button>
+          </div>
+        </div>
+      `
+    })
+    .join('')
+}
+
+/**
+ * Filtros del Calendario
+ */
+function aplicarFiltrosCalendario() {
+  const selSede = document.getElementById('filtro-cal-sede')
+  const selEstado = document.getElementById('filtro-cal-estado')
+
+  if (selSede) appState.calendar.filtroSede = selSede.value
+  if (selEstado) appState.calendar.filtroEstado = selEstado.value
+
+  renderizarPanelCalendario()
+}
+
+function seleccionarChipEstadoCalendario(estado) {
+  appState.calendar.filtroEstado = estado
+  const selEstado = document.getElementById('filtro-cal-estado')
+  if (selEstado) selEstado.value = estado
+  renderizarPanelCalendario()
+}
+
+function sincronizarChipsEstado(estadoActivo) {
+  const chips = document.querySelectorAll('.cal-chips-group .chip-btn')
+  chips.forEach((btn) => {
+    if (btn.getAttribute('data-estado') === estadoActivo) {
+      btn.classList.add('active')
+    } else {
+      btn.classList.remove('active')
+    }
+  })
+}
+
+function restablecerFiltrosCalendario() {
+  appState.calendar.filtroSede = 'TODAS'
+  appState.calendar.filtroEstado = 'TODOS'
+  appState.filtroTextoPracticante = ''
+  appState.filtroSupervisor = 'TODOS'
+
+  const selSede = document.getElementById('filtro-cal-sede')
+  const selEstado = document.getElementById('filtro-cal-estado')
+  const inputSearch = document.getElementById('input-busqueda-practicante')
+  const selSup = document.getElementById('select-filtro-supervisor')
+
+  if (selSede) selSede.value = 'TODAS'
+  if (selEstado) selEstado.value = 'TODOS'
+  if (inputSearch) inputSearch.value = ''
+  if (selSup) selSup.value = 'TODOS'
+
+  const btnLimpiar = document.getElementById('btn-limpiar-busqueda-p')
+  if (btnLimpiar) btnLimpiar.style.display = 'none'
+
+  sincronizarChipsEstado('TODOS')
+  renderizarPanelCalendario()
+  mostrarToast('Filtros del calendario restablecidos.', 'info')
+}
+
+function filtrarListaCostadoCalendario(texto) {
+  appState.calendar.sideFilterSearch = (texto || '').trim().toLowerCase()
+  const btnClear = document.getElementById('cal-side-clear-search')
+  if (btnClear) {
+    btnClear.style.display = appState.calendar.sideFilterSearch
+      ? 'block'
+      : 'none'
+  }
+  renderizarListaCostadoCalendario()
+}
+
+function limpiarBusquedaCostadoCalendario() {
+  const input = document.getElementById('cal-side-search-input')
+  if (input) input.value = ''
+  filtrarListaCostadoCalendario('')
+}
+
+/**
+ * Modal Detalle Exhaustivo de la Jornada del Practicante
+ */
+function abrirModalDetalleJornada(practicanteId, fechaStr) {
+  const modal = document.getElementById('modal-detalle-jornada')
+  if (!modal) return
+
+  let practicante = null
+  let dia = null
+
+  // 1. Buscar en cache de semanas
+  const semanas = Object.values(appState.cacheReporteSemanal || {})
+  for (const lista of semanas) {
+    if (!Array.isArray(lista)) continue
+    const pFound = lista.find(
+      (p) =>
+        (p.idPracticante &&
+          p.idPracticante.toLowerCase() ===
+            String(practicanteId).toLowerCase()) ||
+        (p.usuario &&
+          p.usuario.toLowerCase() === String(practicanteId).toLowerCase()),
+    )
+    if (pFound && pFound.desgloseSemanal) {
+      const dFound = pFound.desgloseSemanal.find((d) => d.fecha === fechaStr)
+      if (dFound) {
+        practicante = pFound
+        dia = dFound
+        break
+      }
+    }
+  }
+
+  // 2. Si no se encontró en semanas, buscar en appState.practicantes (hoy)
+  if (!practicante && appState.practicantes) {
+    const pFound = appState.practicantes.find(
+      (p) =>
+        (p.idPracticante &&
+          p.idPracticante.toLowerCase() ===
+            String(practicanteId).toLowerCase()) ||
+        (p.usuario &&
+          p.usuario.toLowerCase() === String(practicanteId).toLowerCase()),
+    )
+    if (pFound) {
+      practicante = pFound
+      dia = (pFound.desgloseSemanal || []).find(
+        (d) => d.fecha === fechaStr,
+      ) || {
+        fecha: fechaStr,
+        minutos: pFound.minutosHoy || 0,
+        estado:
+          pFound.entrada && !pFound.salida
+            ? 'EN_CURSO'
+            : pFound.entrada && pFound.salida
+              ? 'COMPLETADO'
+              : 'PENDIENTE',
+        horaEntradaReal: pFound.entrada ? pFound.entrada.hora : null,
+        horaSalidaReal: pFound.salida ? pFound.salida.hora : null,
+        entrada: pFound.entrada,
+        salida: pFound.salida,
+        incidencia: pFound.incidencia,
+      }
+    }
+  }
+
+  if (!practicante || !dia) {
+    mostrarToast('No se encontró el registro detallado.', 'warning')
+    return
+  }
+
+  appState.jornadaActualDetalle = { practicante, dia }
+
+  const elNombre = document.getElementById('modal-jornada-nombre')
+  const elSubinfo = document.getElementById('modal-jornada-subinfo')
+  const elTags = document.getElementById('modal-jornada-tags')
+  const elBody = document.getElementById('modal-jornada-body')
+
+  if (elNombre) {
+    elNombre.textContent =
+      practicante.nombre || practicante.usuario || 'Practicante'
+  }
+
+  const sede = practicante.oficina || 'General'
+  const sup =
+    practicante.supervisorNombre ||
+    practicante.supervisorAsignado ||
+    practicante.supervisor ||
+    'General'
+  const hProg = `${formatearHoraSinSegundos(practicante.horaEntradaOficial)} - ${formatearHoraSinSegundos(practicante.horaSalidaOficial)}`
+
+  const partesFecha = (dia.fecha || '').split('-')
+  const fechaFormateada =
+    partesFecha.length === 3
+      ? `${partesFecha[2]}/${partesFecha[1]}/${partesFecha[0]}`
+      : dia.fecha
+
+  if (elSubinfo) {
+    elSubinfo.innerHTML = `
+      <span class="modal-sub-badge">${sede}</span>
+      <span class="modal-sub-dot">•</span>
+      <span>${dia.diaNombre ? dia.diaNombre + ', ' : ''}${fechaFormateada}</span>
+      <span class="modal-sub-dot">•</span>
+      <span>Horario: ${hProg}</span>
+      <span class="modal-sub-dot">•</span>
+      <span>Sup: ${sup}</span>
+    `
+  }
+
+  if (elTags) {
+    elTags.innerHTML = ''
+    elTags.style.display = 'none'
+  }
+
+  // Bloques en el cuerpo del modal (Minimalista)
+  if (elBody) {
+    const ent =
+      dia.entrada ||
+      (practicante.entrada && dia.fecha === obtenerFechaHoyISO()
+        ? practicante.entrada
+        : null)
+    const sal =
+      dia.salida ||
+      (practicante.salida && dia.fecha === obtenerFechaHoyISO()
+        ? practicante.salida
+        : null)
+    const inc =
+      dia.incidencia ||
+      (practicante.incidencia && dia.fecha === obtenerFechaHoyISO()
+        ? practicante.incidencia
+        : null)
+
+    const hEntradaReal = dia.horaEntradaReal || (ent ? ent.hora : '--')
+    const hSalidaReal = dia.horaSalidaReal || (sal ? sal.hora : '--')
+    const modoEnt = ent?.modo || (hEntradaReal !== '--' ? 'REAL' : '--')
+    const modoSal = sal?.modo || (hSalidaReal !== '--' ? 'REAL' : '--')
+    const regPorEnt = ent?.registradoPor || '--'
+    const regPorSal = sal?.registradoPor || '--'
+    const obsEnt = ent?.observacion || '--'
+    const obsSal = sal?.observacion || '--'
+
+    const punt = dia.puntualidad || obtenerPuntualidad(dia, practicante, 5)
+    let puntBadge = '<span class="cell-pill cell-completed">A tiempo</span>'
+    if (hEntradaReal === '--') {
+      puntBadge = '<span class="cell-pill cell-pending">Sin registro</span>'
+    } else if (punt) {
+      if (punt.nivel === 'naranja') {
+        puntBadge = `<span class="cell-pill cell-pending">Tolerancia (+${punt.minutosTarde}m)</span>`
+      } else if (punt.nivel === 'rojo') {
+        puntBadge = `<span class="cell-pill cell-incident">Tarde (+${punt.minutosTarde}m)</span>`
+      }
+    }
+
+    const salBadge =
+      hSalidaReal !== '--'
+        ? '<span class="cell-pill cell-completed">Registrada</span>'
+        : '<span class="cell-pill cell-pending">Sin salida</span>'
+
+    const metaMin = practicante.metaDiariaMinutos || 240
+    const minutosComp = dia.minutos || 0
+    const cumplioMeta = minutosComp >= metaMin
+    const metaBadge = cumplioMeta
+      ? '<span class="cell-pill cell-completed">Meta Cumplida</span>'
+      : '<span class="cell-pill cell-incident">Horas Incompletas</span>'
+
+    // Formatear modo y supervisor de registro de forma unificada si coinciden
+    const nomSupEnt = resolverNombreSupervisor(regPorEnt, practicante)
+    const nomSupSal = resolverNombreSupervisor(regPorSal, practicante)
+    const humanModoEnt = humanizarModoRegistro(modoEnt)
+    const humanModoSal = humanizarModoRegistro(modoSal)
+
+    let infoRegistro = ''
+    if (hEntradaReal !== '--' || hSalidaReal !== '--') {
+      const modoTexto =
+        humanModoEnt === humanModoSal || hSalidaReal === '--'
+          ? humanModoEnt
+          : `Entrada: ${humanModoEnt} • Salida: ${humanModoSal}`
+
+      const supTexto =
+        nomSupEnt === nomSupSal || hSalidaReal === '--'
+          ? nomSupEnt
+          : `Entrada: ${nomSupEnt} • Salida: ${nomSupSal}`
+
+      infoRegistro = `
+        <div class="modal-meta-row">
+          <div class="modal-meta-item">
+            <span class="modal-meta-lbl">Modalidad:</span>
+            <span class="modal-meta-val">${modoTexto}</span>
+          </div>
+          <div class="modal-meta-item">
+            <span class="modal-meta-lbl">Registrado por:</span>
+            <span class="modal-meta-val">${supTexto}</span>
+          </div>
+        </div>
+      `
+    }
+
+    // Incidencias o notas
+    let bloqueNotas = ''
+    const tieneObsEnt =
+      obsEnt && obsEnt !== '--' && obsEnt !== 'Marcación en tiempo real'
+    const tieneObsSal =
+      obsSal &&
+      obsSal !== '--' &&
+      !obsSal.startsWith('Marcación en tiempo real | Duración')
+
+    if (tieneObsEnt || tieneObsSal) {
+      bloqueNotas = `
+        <div class="modal-notes-clean">
+          ${tieneObsEnt ? `<div><span class="modal-note-tag">Nota Entrada:</span> ${obsEnt}</div>` : ''}
+          ${tieneObsSal ? `<div><span class="modal-note-tag">Nota Salida:</span> ${obsSal}</div>` : ''}
+        </div>
+      `
+    }
+
+    let bloqueIncidencia = ''
+    if (
+      inc ||
+      dia.estado === 'FALTA' ||
+      dia.estado === 'PERMISO_COMPUTADO' ||
+      dia.estado === 'FERIADO'
+    ) {
+      const tipoInc = inc?.tipo || dia.estado
+      const obsInc =
+        inc?.observacion ||
+        (dia.estado === 'FERIADO'
+          ? 'Día feriado oficial'
+          : 'Sin observación registrada')
+      bloqueIncidencia = `
+        <div class="modal-alert-clean">
+          <div class="modal-alert-icon">ℹ️</div>
+          <div class="modal-alert-content">
+            <strong>${tipoInc}:</strong> ${obsInc}
+          </div>
+        </div>
+      `
+    }
+
+    elBody.innerHTML = `
+      <div class="modal-journey-strip">
+        <!-- Entrada -->
+        <div class="modal-journey-col">
+          <span class="modal-col-lbl">ENTRADA</span>
+          <div class="modal-col-time ${hEntradaReal !== '--' ? 'time-emerald' : 'time-muted'}">${hEntradaReal}</div>
+          <div class="modal-col-badge">${puntBadge}</div>
+        </div>
+
+        <div class="modal-journey-divider"></div>
+
+        <!-- Salida -->
+        <div class="modal-journey-col">
+          <span class="modal-col-lbl">SALIDA</span>
+          <div class="modal-col-time ${hSalidaReal !== '--' ? 'time-blue' : 'time-muted'}">${hSalidaReal}</div>
+          <div class="modal-col-badge">${salBadge}</div>
+        </div>
+
+        <div class="modal-journey-divider"></div>
+
+        <!-- Total Jornada -->
+        <div class="modal-journey-col">
+          <span class="modal-col-lbl">TOTAL JORNADA</span>
+          <div class="modal-col-time time-dark">${formatearMinutos(minutosComp)}</div>
+          <div class="modal-col-meta">
+            ${metaBadge}
+            <span class="modal-meta-target">Meta: ${formatearMinutos(metaMin)}</span>
+          </div>
+        </div>
+      </div>
+
+      ${infoRegistro}
+      ${bloqueNotas}
+      ${bloqueIncidencia}
+    `
+  }
+
+  // Sincronizar y poblar inmediatamente los campos de ajuste con los datos de esta jornada
+  const entModal =
+    dia.entrada ||
+    (practicante.entrada && dia.fecha === obtenerFechaHoyISO()
+      ? practicante.entrada
+      : null)
+  const salModal =
+    dia.salida ||
+    (practicante.salida && dia.fecha === obtenerFechaHoyISO()
+      ? practicante.salida
+      : null)
+  const hEntModal = dia.horaEntradaReal || (entModal ? entModal.hora : '')
+  const hSalModal = dia.horaSalidaReal || (salModal ? salModal.hora : '')
+
+  const inputFecha = document.getElementById('edit-jornada-fecha')
+  const inputEntrada = document.getElementById('edit-jornada-entrada')
+  const inputSalida = document.getElementById('edit-jornada-salida')
+  const inputMotivo = document.getElementById('edit-jornada-motivo')
+
+  if (inputFecha) inputFecha.value = dia.fecha || obtenerFechaHoyISO()
+  if (inputEntrada) inputEntrada.value = formatearHoraParaInputTime(hEntModal)
+  if (inputSalida) inputSalida.value = formatearHoraParaInputTime(hSalModal)
+  if (inputMotivo) inputMotivo.value = ''
+
+  // Horarios oficiales para botones de marcación rápida
+  const hOficialEnt = formatearHoraParaInputTime(
+    practicante.horaEntradaOficial || '',
+  )
+  const hOficialSal = formatearHoraParaInputTime(
+    practicante.horaSalidaOficial || '',
+  )
+  const txtEnt = document.getElementById('txt-oficial-entrada')
+  const txtSal = document.getElementById('txt-oficial-salida')
+  if (txtEnt)
+    txtEnt.textContent = hOficialEnt ? `Oficial: ${hOficialEnt}` : 'Oficial'
+  if (txtSal)
+    txtSal.textContent = hOficialSal ? `Oficial: ${hOficialSal}` : 'Oficial'
+
+  actualizarCalculoHorasEnVivoEdicion()
+
+  // Iniciar siempre en Modo Consulta Limpio (Opción 1: Sin redundancia)
+  const bodyDetalle = document.getElementById('modal-jornada-body')
+  const formEdicion = document.getElementById('modal-jornada-edit-form')
+  const actionsDetalle = document.getElementById(
+    'modal-jornada-actions-detalle',
+  )
+  const actionsEdicion = document.getElementById(
+    'modal-jornada-actions-edicion',
+  )
+
+  if (bodyDetalle) bodyDetalle.classList.remove('hidden')
+  if (formEdicion) formEdicion.classList.add('hidden')
+  if (actionsDetalle) actionsDetalle.classList.remove('hidden')
+  if (actionsEdicion) actionsEdicion.classList.add('hidden')
+
+  modal.classList.remove('hidden')
+}
+
+function cerrarModalDetalleJornada() {
+  const modal = document.getElementById('modal-detalle-jornada')
+  if (modal) modal.classList.add('hidden')
+  appState.jornadaActualDetalle = null
+}
+
+/**
+ * ==========================================================
+ * EDICIÓN DE JORNADA DIARIA (ENTRADA, SALIDA, FECHA Y HORAS)
+ * ==========================================================
+ */
+function formatearHoraParaInputTime(valor) {
+  if (!valor || valor === '--') return ''
+  const m = String(valor).match(/(\d{1,2}):(\d{2})/)
+  if (!m) return ''
+  return `${m[1].padStart(2, '0')}:${m[2]}`
+}
+
+function activarModoEdicionJornada() {
+  if (!appState.jornadaActualDetalle) {
+    mostrarToast('No hay una jornada seleccionada para editar.', 'warning')
+    return
+  }
+
+  // Alternar a vista de formulario de edición (Opción 1: Transición Limpia)
+  const bodyDetalle = document.getElementById('modal-jornada-body')
+  const formEdicion = document.getElementById('modal-jornada-edit-form')
+  const actionsDetalle = document.getElementById(
+    'modal-jornada-actions-detalle',
+  )
+  const actionsEdicion = document.getElementById(
+    'modal-jornada-actions-edicion',
+  )
+
+  if (bodyDetalle) bodyDetalle.classList.add('hidden')
+  if (formEdicion) formEdicion.classList.remove('hidden')
+  if (actionsDetalle) actionsDetalle.classList.add('hidden')
+  if (actionsEdicion) actionsEdicion.classList.remove('hidden')
+
+  actualizarCalculoHorasEnVivoEdicion()
+
+  const inputMotivo = document.getElementById('edit-jornada-motivo')
+  if (inputMotivo) {
+    inputMotivo.value = ''
+    inputMotivo.focus()
+  }
+}
+
+function cancelarModoEdicionJornada() {
+  // Revertir valores a los originales
+  if (appState.jornadaActualDetalle) {
+    const { practicante, dia } = appState.jornadaActualDetalle
+    const ent =
+      dia.entrada ||
+      (practicante.entrada && dia.fecha === obtenerFechaHoyISO()
+        ? practicante.entrada
+        : null)
+    const sal =
+      dia.salida ||
+      (practicante.salida && dia.fecha === obtenerFechaHoyISO()
+        ? practicante.salida
+        : null)
+
+    const hEnt = dia.horaEntradaReal || (ent ? ent.hora : '')
+    const hSal = dia.horaSalidaReal || (sal ? sal.hora : '')
+
+    const inputFecha = document.getElementById('edit-jornada-fecha')
+    const inputEntrada = document.getElementById('edit-jornada-entrada')
+    const inputSalida = document.getElementById('edit-jornada-salida')
+    const inputMotivo = document.getElementById('edit-jornada-motivo')
+
+    if (inputFecha) inputFecha.value = dia.fecha || obtenerFechaHoyISO()
+    if (inputEntrada) inputEntrada.value = formatearHoraParaInputTime(hEnt)
+    if (inputSalida) inputSalida.value = formatearHoraParaInputTime(hSal)
+    if (inputMotivo) inputMotivo.value = ''
+  }
+
+  // Regresar a la vista de Consulta limpia
+  const bodyDetalle = document.getElementById('modal-jornada-body')
+  const formEdicion = document.getElementById('modal-jornada-edit-form')
+  const actionsDetalle = document.getElementById(
+    'modal-jornada-actions-detalle',
+  )
+  const actionsEdicion = document.getElementById(
+    'modal-jornada-actions-edicion',
+  )
+
+  if (bodyDetalle) bodyDetalle.classList.remove('hidden')
+  if (formEdicion) formEdicion.classList.add('hidden')
+  if (actionsDetalle) actionsDetalle.classList.remove('hidden')
+  if (actionsEdicion) actionsEdicion.classList.add('hidden')
+}
+
+function aplicarHoraOficialEntrada() {
+  if (!appState.jornadaActualDetalle?.practicante) return
+  const hOficial = formatearHoraParaInputTime(
+    appState.jornadaActualDetalle.practicante.horaEntradaOficial || '',
+  )
+  if (!hOficial) {
+    mostrarToast(
+      'Este practicante no tiene hora oficial de entrada configurada.',
+      'warning',
+    )
+    return
+  }
+  const inputEnt = document.getElementById('edit-jornada-entrada')
+  if (inputEnt) {
+    inputEnt.value = hOficial
+    actualizarCalculoHorasEnVivoEdicion()
+  }
+}
+
+function aplicarHoraOficialSalida() {
+  if (!appState.jornadaActualDetalle?.practicante) return
+  const hOficial = formatearHoraParaInputTime(
+    appState.jornadaActualDetalle.practicante.horaSalidaOficial || '',
+  )
+  if (!hOficial) {
+    mostrarToast(
+      'Este practicante no tiene hora oficial de salida configurada.',
+      'warning',
+    )
+    return
+  }
+  const inputSal = document.getElementById('edit-jornada-salida')
+  if (inputSal) {
+    inputSal.value = hOficial
+    actualizarCalculoHorasEnVivoEdicion()
+  }
+}
+
+function actualizarCalculoHorasEnVivoEdicion() {
+  const inputEntrada = document.getElementById('edit-jornada-entrada')
+  const inputSalida = document.getElementById('edit-jornada-salida')
+  const elHoras = document.getElementById('edit-preview-horas')
+  const elStatus = document.getElementById('edit-preview-status')
+  const boxBanner = document.getElementById('edit-jornada-preview-box')
+  const btnGuardar = document.getElementById('btn-guardar-edicion')
+
+  const entVal = inputEntrada ? inputEntrada.value.trim() : ''
+  const salVal = inputSalida ? inputSalida.value.trim() : ''
+
+  let metaMin = 240
+  if (
+    appState.jornadaActualDetalle &&
+    appState.jornadaActualDetalle.practicante
+  ) {
+    metaMin = appState.jornadaActualDetalle.practicante.metaDiariaMinutos || 240
+  }
+
+  if (boxBanner) {
+    boxBanner.classList.remove('preview-valid', 'preview-invalid')
+  }
+
+  if (entVal && salVal) {
+    const minCalculados = calcularMinutosEntreHoras(salVal, entVal)
+    if (minCalculados <= 0) {
+      if (elHoras) elHoras.textContent = 'Horario Inválido'
+      if (elStatus) {
+        elStatus.innerHTML =
+          '<span class="cell-pill cell-incident">Salida debe ser posterior</span>'
+      }
+      if (boxBanner) boxBanner.classList.add('preview-invalid')
+      if (btnGuardar) btnGuardar.disabled = true
+    } else {
+      const horasStr = formatearMinutos(minCalculados)
+      if (elHoras) elHoras.textContent = horasStr
+      const cumplio = minCalculados >= metaMin
+      const badgeHtml = cumplio
+        ? `<span class="cell-pill cell-completed">Meta Cumplida (${formatearMinutos(metaMin)})</span>`
+        : `<span class="cell-pill cell-pending">Incompleta (Meta: ${formatearMinutos(metaMin)})</span>`
+      if (elStatus) elStatus.innerHTML = badgeHtml
+      if (boxBanner) boxBanner.classList.add('preview-valid')
+      if (btnGuardar) btnGuardar.disabled = false
+    }
+  } else if (entVal && !salVal) {
+    if (elHoras) elHoras.textContent = 'En curso'
+    if (elStatus) {
+      elStatus.innerHTML =
+        '<span class="cell-pill cell-pending">Solo Entrada registrada</span>'
+    }
+    if (btnGuardar) btnGuardar.disabled = false
+  } else {
+    if (elHoras) elHoras.textContent = '--:--'
+    if (elStatus) {
+      elStatus.innerHTML =
+        '<span class="cell-pill cell-pending">Ingrese horario</span>'
+    }
+    if (btnGuardar) btnGuardar.disabled = false
+  }
+}
+
+async function guardarEdicionJornada() {
+  if (!appState.jornadaActualDetalle) return
+  const { practicante, dia } = appState.jornadaActualDetalle
+
+  const inputFecha = document.getElementById('edit-jornada-fecha')
+  const inputEntrada = document.getElementById('edit-jornada-entrada')
+  const inputSalida = document.getElementById('edit-jornada-salida')
+  const inputMotivo = document.getElementById('edit-jornada-motivo')
+  const btnGuardar = document.getElementById('btn-guardar-edicion')
+
+  const fechaNueva = inputFecha ? inputFecha.value.trim() : dia.fecha
+  const horaEntrada = inputEntrada ? inputEntrada.value.trim() : ''
+  const horaSalida = inputSalida ? inputSalida.value.trim() : ''
+  const motivo = inputMotivo ? inputMotivo.value.trim() : ''
+
+  if (!fechaNueva) {
+    mostrarToast('Debes seleccionar una fecha válida.', 'warning')
+    return
+  }
+
+  if (horaEntrada && horaSalida) {
+    const diff = calcularMinutosEntreHoras(horaSalida, horaEntrada)
+    if (diff <= 0) {
+      mostrarToast(
+        'La hora de salida debe ser posterior a la hora de entrada.',
+        'error',
+      )
+      return
+    }
+  }
+
+  if (!motivo) {
+    mostrarToast(
+      'Por favor ingresa una justificación o motivo para la corrección.',
+      'warning',
+    )
+    if (inputMotivo) inputMotivo.focus()
+    return
+  }
+
+  const supervisorId =
+    appState.supervisor?.idSupervisor ||
+    appState.supervisor?.usuario ||
+    'Supervisor'
+  const supervisorNombre =
+    appState.supervisor?.nombre || appState.supervisor?.usuario || supervisorId
+
+  const payload = {
+    accion: 'editar_marcacion',
+    idPracticante: practicante.idPracticante || practicante.usuario,
+    fechaOriginal: dia.fecha,
+    fechaNueva: fechaNueva,
+    horaEntrada: horaEntrada,
+    horaSalida: horaSalida,
+    motivo: motivo,
+    registradoPor: supervisorId,
+    nombreSupervisor: supervisorNombre,
+  }
+
+  const textoBtnOriginal = btnGuardar ? btnGuardar.innerHTML : ''
+  if (btnGuardar) {
+    btnGuardar.disabled = true
+    btnGuardar.innerHTML = 'Guardando...'
+  }
+  setSyncStatus('syncing', 'Guardando corrección...')
+
+  try {
+    const data = await llamarAppsScript(payload, true)
+
+    if (!data.success) {
+      throw new Error(data.error || 'Error al guardar la corrección.')
+    }
+
+    setSyncStatus('success', 'Jornada actualizada ✔')
+    mostrarToast(
+      data.mensaje || 'Jornada actualizada correctamente.',
+      'success',
+    )
+
+    // Actualizar estado en memoria
+    const j = data.jornada || {}
+    const pIdTarget = (
+      practicante.idPracticante ||
+      practicante.usuario ||
+      ''
+    ).toLowerCase()
+
+    // 1. Si la fecha corresponde a hoy, actualizar appState.practicantes
+    const hoyISO = obtenerFechaHoyISO()
+    if (j.fecha === hoyISO || dia.fecha === hoyISO) {
+      const pIndex = (appState.practicantes || []).findIndex(
+        (item) =>
+          (item.idPracticante &&
+            item.idPracticante.toLowerCase() === pIdTarget) ||
+          (item.usuario && item.usuario.toLowerCase() === pIdTarget),
+      )
+      if (pIndex >= 0) {
+        const pHoy = appState.practicantes[pIndex]
+        if (j.horaEntrada) {
+          pHoy.entrada = {
+            idRegistro: pHoy.entrada?.idRegistro || 'EDITADO',
+            hora: j.horaEntrada,
+            modo: 'EDITADO',
+            observacion: j.observacionesEntrada || motivo,
+          }
+        }
+        if (j.horaSalida) {
+          pHoy.salida = {
+            idRegistro: pHoy.salida?.idRegistro || 'EDITADO',
+            hora: j.horaSalida,
+            modo: 'EDITADO',
+            observacion: j.observacionesSalida || motivo,
+          }
+          pHoy.minutosHoy = j.minutosTrabajados || 0
+        }
+        if (pHoy.incidencia && (j.horaEntrada || j.horaSalida)) {
+          pHoy.incidencia = null
+        }
+      }
+    }
+
+    // 2. Actualizar desglose semanal en cache de reportes
+    const semanas = Object.values(appState.cacheReporteSemanal || {})
+    semanas.forEach((lista) => {
+      if (!Array.isArray(lista)) return
+      const pFound = lista.find(
+        (item) =>
+          (item.idPracticante &&
+            item.idPracticante.toLowerCase() === pIdTarget) ||
+          (item.usuario && item.usuario.toLowerCase() === pIdTarget),
+      )
+      if (pFound && pFound.desgloseSemanal) {
+        const diaFound = pFound.desgloseSemanal.find(
+          (d) => d.fecha === dia.fecha || d.fecha === j.fecha,
+        )
+        if (diaFound) {
+          diaFound.fecha = j.fecha || diaFound.fecha
+          diaFound.horaEntradaReal = j.horaEntrada || null
+          diaFound.horaSalidaReal = j.horaSalida || null
+          diaFound.minutos = j.minutosTrabajados || 0
+          diaFound.horasFormateadas =
+            j.horasTrabajadas || (j.horaEntrada ? 'En curso' : '--')
+          diaFound.estado = j.horaSalida
+            ? 'COMPLETADO'
+            : j.horaEntrada
+              ? 'EN_CURSO'
+              : 'NO_REGISTRADO'
+          diaFound.cumplioMeta =
+            (j.minutosTrabajados || 0) >= (pFound.metaDiariaMinutos || 240)
+          diaFound.entrada = j.horaEntrada
+            ? { hora: j.horaEntrada, modo: 'EDITADO' }
+            : null
+          diaFound.salida = j.horaSalida
+            ? { hora: j.horaSalida, modo: 'EDITADO' }
+            : null
+
+          // Recalcular total semanal
+          const totalMin = pFound.desgloseSemanal.reduce(
+            (acc, d) => acc + (d.minutos || 0),
+            0,
+          )
+          pFound.minutosSemanaTotal = totalMin
+          pFound.saldoSemanalMinutos =
+            totalMin - (pFound.metaDiariaMinutos || 240) * 5
+        }
+      }
+    })
+
+    // 3. Si la auditoría está cargada, refrescarla en segundo plano
+    if (appState.registrosAuditoria && appState.registrosAuditoria.length > 0) {
+      cargarAuditoriaRegistros(true).catch(() => {})
+    }
+
+    cerrarModalDetalleJornada()
+    renderizarTodo()
+  } catch (err) {
+    setSyncStatus('error', 'Error al corregir')
+    mostrarToast('No se pudo guardar la corrección: ' + err.message, 'error')
+  } finally {
+    if (btnGuardar) {
+      btnGuardar.disabled = false
+      btnGuardar.innerHTML = textoBtnOriginal || 'Guardar Cambios'
+    }
+  }
+}
+
+function abrirEdicionJornadaHoy(idPracticante) {
+  const hoyISO = obtenerFechaHoyISO()
+  abrirModalDetalleJornada(idPracticante, hoyISO)
+  activarModoEdicionJornada()
 }
 
 // ==========================================================
